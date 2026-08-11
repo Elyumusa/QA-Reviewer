@@ -20,7 +20,7 @@ The tool must be run with the WebApp checkout as its working directory, or from 
 
 ### Install from GitHub
 
-After this repository has been published, install it as a development dependency from the WebApp checkout:
+Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
