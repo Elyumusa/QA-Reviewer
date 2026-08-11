@@ -36,9 +36,12 @@ interface CliOptions {
   format: OutputFormat
   deterministicOnly: boolean
   provider: AiProviderId | null
+  testType: TestType | null
   mode: ReviewMode
   auditChunkLines: number
   auditConcurrency: number
+  transportRetries: number
+  transportRetryDelayMs: number
   auditCache: boolean
   quiet: boolean
   help: boolean
@@ -59,9 +62,12 @@ Options:
   --format <json|markdown|both>  Report format (default: json)
   --mode <focused|audit>       Focused CI review or comprehensive audit (default: focused)
   --provider <name>            deepseek, openai, or anthropic (default: QA_AI_PROVIDER or deepseek)
+  --test-type <component|e2e> Override automatic test-type classification
   --deterministic-only         Skip AI review (useful without an API key)
   --audit-chunk-lines <count>  Lines per audit evidence chunk (default: 700)
   --audit-concurrency <count>  Parallel audit chunk requests, 1-4 (default: 2)
+  --transport-retries <count>  Retries for reset/timeout errors, 0-3 (default: 2)
+  --transport-retry-delay-ms <ms>  Initial exponential retry delay (default: 2000)
   --no-audit-cache            Ignore and do not write reusable audit checkpoints
   --max-related-files <count>  Related context files per test (default: 5)
   --max-context-chars <count>  Additional diff/context character budget (default: 50000)
@@ -91,6 +97,14 @@ function positiveInteger(value: string, option: string): number {
   return parsed
 }
 
+function nonNegativeInteger(value: string, option: string): number {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new QualityReviewerError(`${option} must be a non-negative integer`)
+  }
+  return parsed
+}
+
 export function parseArguments(args: string[]): CliOptions {
   const options: CliOptions = {
     base: 'origin/main',
@@ -100,9 +114,12 @@ export function parseArguments(args: string[]): CliOptions {
     format: 'json',
     deterministicOnly: false,
     provider: null,
+    testType: null,
     mode: 'focused',
     auditChunkLines: 700,
     auditConcurrency: 2,
+    transportRetries: 2,
+    transportRetryDelayMs: 2000,
     auditCache: true,
     quiet: false,
     help: false,
@@ -155,6 +172,15 @@ export function parseArguments(args: string[]): CliOptions {
         options.provider = resolveAiProviderId(requiredValue(args, index, '--provider'))
         index += 1
         break
+      case '--test-type': {
+        const value = requiredValue(args, index, '--test-type')
+        if (value !== 'component' && value !== 'e2e') {
+          throw new QualityReviewerError('--test-type must be component or e2e')
+        }
+        options.testType = value
+        index += 1
+        break
+      }
       case '--mode': {
         const value = requiredValue(args, index, '--mode')
         if (value !== 'focused' && value !== 'audit') {
@@ -172,6 +198,16 @@ export function parseArguments(args: string[]): CliOptions {
       case '--audit-concurrency':
         options.auditConcurrency = positiveInteger(requiredValue(args, index, argument), argument)
         if (options.auditConcurrency > 4) throw new QualityReviewerError('--audit-concurrency must be between 1 and 4')
+        index += 1
+        break
+      case '--transport-retries':
+        options.transportRetries = nonNegativeInteger(requiredValue(args, index, argument), argument)
+        if (options.transportRetries > 3) throw new QualityReviewerError('--transport-retries must be between 0 and 3')
+        index += 1
+        break
+      case '--transport-retry-delay-ms':
+        options.transportRetryDelayMs = nonNegativeInteger(requiredValue(args, index, argument), argument)
+        if (options.transportRetryDelayMs > 30_000) throw new QualityReviewerError('--transport-retry-delay-ms must be between 0 and 30000')
         index += 1
         break
       case '--no-audit-cache':
@@ -292,6 +328,8 @@ export async function run(args = process.argv.slice(2)): Promise<number> {
         provider: configuration.adapter,
         onProgress: progress,
         timeoutMs: options.mode === 'audit' ? 300_000 : 120_000,
+        transportRetries: options.transportRetries,
+        transportRetryDelayMs: options.transportRetryDelayMs,
       })
       if (options.mode === 'audit') {
         auditProvider = new AiAuditReviewer({
@@ -299,7 +337,7 @@ export async function run(args = process.argv.slice(2)): Promise<number> {
           chunkLines: options.auditChunkLines,
           chunkConcurrency: options.auditConcurrency,
           checkpointDirectory: options.auditCache
-            ? path.join(repoRoot, 'WebAppTests/QualityReviewer/.qa-review-cache')
+            ? path.join(repoRoot, '.qa-review-cache')
             : null,
           onProgress: progress,
         })
@@ -318,7 +356,7 @@ export async function run(args = process.argv.slice(2)): Promise<number> {
   const standardsPaths = defaultStandardsPaths(repoRoot)
 
   for (const file of files) {
-    const testType = classifyTestFile(file)
+    const testType = options.testType ?? classifyTestFile(file)
     let providerInvoked = false
     try {
       progress(`Preparing ${file} (${testType}).`)
@@ -343,10 +381,12 @@ export async function run(args = process.argv.slice(2)): Promise<number> {
         aiResult = await reviewProvider.review(testType, standards, context, deterministic)
       }
       const findings = mergeFindings(deterministic, auditResult?.findings ?? aiResult?.findings ?? [])
+      const incompleteError = auditResult?.incomplete_error
+      if (incompleteError) errors.push(`${file}: ${incompleteError}`)
       reviews.push({
         file,
         test_type: testType,
-        status: findings.length > 0 ? 'fail' : 'pass',
+        status: incompleteError ? 'error' : findings.length > 0 ? 'fail' : 'pass',
         summary: auditResult?.summary ?? aiResult?.summary ?? (findings.length > 0
           ? `${findings.length} deterministic finding(s).`
           : 'No deterministic issues found.'),
@@ -354,7 +394,9 @@ export async function run(args = process.argv.slice(2)): Promise<number> {
         context_files_used: context.related_files.map(related => related.path),
         ...(auditResult ? { audit: auditResult.audit } : {}),
       })
-      progress(`Completed ${file}: ${findings.length} consolidated finding(s).`)
+      progress(incompleteError
+        ? `Completed ${file} with a partial audit: ${findings.length} preserved finding(s).`
+        : `Completed ${file}: ${findings.length} consolidated finding(s).`)
     } catch (error) {
       const message = `${file}: ${errorMessage(error)}`
       errors.push(message)

@@ -31,7 +31,7 @@ export function classifyTestFile(filePath: string): TestType {
   }
 
   if (
-    normalized.includes('/webappcomponents/clientapp/src/components/') ||
+    /(^|\/)webappcomponents\/clientapp\/src\//.test(normalized) ||
     normalized.includes('/cypress/component/') ||
     normalized.includes('/components/') ||
     normalized.includes('/component/')

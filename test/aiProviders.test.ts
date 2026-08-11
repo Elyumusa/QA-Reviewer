@@ -24,6 +24,10 @@ test('builds provider-specific authentication and request payloads', () => {
   assert.equal(deepRequest.body.max_tokens, 1234)
   assert.deepEqual(deepRequest.body.thinking, { type: 'enabled' })
 
+  const deepStreamRequest = deepseek.buildRequest({ ...request, stream: true })
+  assert.equal(deepStreamRequest.body.stream, true)
+  assert.deepEqual(deepStreamRequest.body.stream_options, { include_usage: true })
+
   const openRequest = openai.buildRequest(request)
   assert.equal(openRequest.headers.Authorization, 'Bearer open-key')
   assert.equal(openRequest.body.max_completion_tokens, 1234)
@@ -60,6 +64,23 @@ test('normalizes OpenAI and Anthropic responses and usage', () => {
   assert.equal(normalized.usage.total_tokens, 28)
   assert.equal(normalized.usage.reasoning_tokens, 3)
   assert.equal(normalized.usage.prompt_cache_hit_tokens, 4)
+})
+
+test('normalizes DeepSeek streaming deltas and final usage', () => {
+  const deepseek = new DeepSeekProviderAdapter({ apiKey: 'key', model: 'requested', apiUrl: 'https://deep.test' })
+  const delta = deepseek.parseStreamChunk({
+    model: 'returned',
+    choices: [{ finish_reason: null, delta: { content: '{"value":' } }],
+  })
+  assert.equal(delta.contentDelta, '{"value":')
+  assert.equal(delta.responseModel, 'returned')
+
+  const final = deepseek.parseStreamChunk({
+    model: 'returned', choices: [],
+    usage: { prompt_tokens: 10, completion_tokens: 6, total_tokens: 16, completion_tokens_details: { reasoning_tokens: 2 } },
+  })
+  assert.equal(final.usage.total_tokens, 16)
+  assert.equal(final.usage.reasoning_tokens, 2)
 })
 
 test('runs the generic JSON client through the Anthropic Messages response shape', async () => {

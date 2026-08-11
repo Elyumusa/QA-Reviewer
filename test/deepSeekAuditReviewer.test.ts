@@ -124,7 +124,7 @@ test('runs inventory, chunk, coverage, and synthesis as a bounded audit workflow
   assert.ok(progress.some(message => message.includes('audit final synthesis')))
 })
 
-test('waits for active chunk requests and does not start more chunks after one fails', async () => {
+test('waits for active chunk requests, stops new work, and returns a partial audit after failure', async () => {
   const content = Array.from({ length: 250 }, (_, index) => `// ${index + 1}`).join('\n')
   const startedChunks: string[] = []
   const context: ReviewContext = {
@@ -165,8 +165,74 @@ test('waits for active chunk requests and does not start more chunks after one f
     },
   })
 
-  await assert.rejects(() => reviewer.audit('component', '# Standards', context, []), /lines-1-100 returned invalid output/)
+  const result = await reviewer.audit('component', '# Standards', context, [])
+  assert.match(result.incomplete_error ?? '', /lines-1-100 returned invalid output/)
+  assert.equal(result.audit.execution.complete, false)
   assert.deepEqual([...new Set(startedChunks)], ['lines-1-100', 'lines-71-170'])
+})
+
+test('splits only a transport-failed chunk and reviews recovery chunks without thinking', async () => {
+  const filler = Array.from({ length: 165 }, (_, index) => `  // detail ${index + 1}`).join('\n')
+  const content = `describe('large area', () => {\n${filler}\n  it('renders', () => cy.get('x-demo').should('exist'))\n})`
+  const context: ReviewContext = { test_file: { path: 'Large.cy.ts', content }, diff: '', related_files: [] }
+  const chunkRequests: Array<{ id: string; thinking: string }> = []
+  let failedPrimary = false
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key',
+    model: 'test-model',
+    chunkLines: 200,
+    chunkConcurrency: 1,
+    transportRetries: 0,
+    transportRetryDelayMs: 0,
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ content: string }>
+        thinking: { type: string }
+      }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      if (system.includes('global test-structure analyst')) return response({
+        summary: 'Large suite.',
+        suites: [{ name: 'large area', start_line: 1, end_line: 168, purpose: 'Rendering', key_behaviors: ['renders'] }],
+        shared_infrastructure: [], cross_suite_patterns: [], context_used: ['Large.cy.ts'], limitations: [],
+      })
+      if (system.includes('test-quality evidence analyst')) {
+        const id = user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown'
+        chunkRequests.push({ id, thinking: body.thinking.type })
+        if (body.thinking.type === 'enabled' && !failedPrimary) {
+          failedPrimary = true
+          const cause = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+          throw new TypeError('terminated', { cause })
+        }
+        const start = Number(user.match(/Lines: (\d+)-/)?.[1] ?? '1')
+        return response({
+          chunk_id: id,
+          summary: 'Recovered evidence chunk.',
+          strengths: [],
+          concerns: [],
+          context_used: ['Large.cy.ts'],
+          evidence_line: start,
+        })
+      }
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'No source context.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [],
+        context_used: ['Large.cy.ts'], limitations: ['No source context.'],
+      })
+      return response({
+        overall_assessment: 'Recovered audit.', summary: 'Recovered successfully.', strengths: [], findings: [],
+        standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [], limitations: [],
+        context_actually_used: ['Large.cy.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', '# Standards', context, [])
+  assert.equal(result.incomplete_error, undefined)
+  assert.equal(result.audit.execution.complete, true)
+  assert.ok(result.audit.execution.adaptive_recoveries.some(item => item.startsWith('semantic-1-168')))
+  assert.equal(chunkRequests.filter(request => request.thinking === 'enabled').length, 1)
+  assert.equal(chunkRequests.filter(request => request.thinking === 'disabled').length, 2)
+  assert.ok(chunkRequests.filter(request => request.thinking === 'disabled').every(request => request.id.startsWith('adaptive-')))
 })
 
 test('reuses checkpointed global, chunk, and coverage passes after a synthesis run', async t => {

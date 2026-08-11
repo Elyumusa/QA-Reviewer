@@ -19,6 +19,7 @@ interface JsonRepairOptions {
 
 class TruncatedCompletionError extends QualityReviewerError {}
 class RefusedCompletionError extends QualityReviewerError {}
+export class AiTransportError extends QualityReviewerError {}
 
 function usageText(usage: AiTokenUsage): string {
   const values = [
@@ -38,12 +39,95 @@ function errorWithCause(error: unknown): string {
 }
 
 function isTransientTransportError(error: unknown): boolean {
+  if (error instanceof AiTransportError) return true
   if (!(error instanceof Error) || error.name === 'AbortError' || error instanceof QualityReviewerError) return false
   if (error instanceof TypeError && /fetch failed|network|socket/i.test(error.message)) return true
   const cause = error.cause
   if (!(cause instanceof Error)) return false
   const code = 'code' in cause && typeof cause.code === 'string' ? cause.code : ''
   return ['ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'EAI_AGAIN'].includes(code)
+}
+
+function mergeUsage(current: AiTokenUsage, update: AiTokenUsage): AiTokenUsage {
+  return {
+    prompt_tokens: update.prompt_tokens ?? current.prompt_tokens,
+    completion_tokens: update.completion_tokens ?? current.completion_tokens,
+    reasoning_tokens: update.reasoning_tokens ?? current.reasoning_tokens,
+    total_tokens: update.total_tokens ?? current.total_tokens,
+    prompt_cache_hit_tokens: update.prompt_cache_hit_tokens ?? current.prompt_cache_hit_tokens,
+    prompt_cache_miss_tokens: update.prompt_cache_miss_tokens ?? current.prompt_cache_miss_tokens,
+  }
+}
+
+async function readStreamingResponse(
+  response: Response,
+  operation: string,
+  provider: AiProviderAdapter,
+): Promise<NormalizedAiResponse> {
+  if (!response.body || !provider.parseStreamChunk) {
+    throw new AiTransportError(`${operation} received an empty streaming response from ${provider.id}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let content = ''
+  let responseModel: string | null = null
+  let finishReason: string | null = null
+  let refusal = false
+  let usage = emptyTokenUsage()
+
+  const consumeEvent = (event: string): boolean => {
+    const data = event
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n')
+      .trim()
+    if (!data) return false
+    if (data === '[DONE]') return true
+
+    let payload: unknown
+    try {
+      payload = JSON.parse(data) as unknown
+    } catch (error) {
+      throw new QualityReviewerError(`${operation} received an invalid JSON streaming event from ${provider.id}`, { cause: error })
+    }
+    const chunk = provider.parseStreamChunk!(payload)
+    content += chunk.contentDelta
+    responseModel = chunk.responseModel ?? responseModel
+    finishReason = chunk.finishReason ?? finishReason
+    refusal ||= chunk.refusal
+    usage = mergeUsage(usage, chunk.usage)
+    return false
+  }
+
+  let finished = false
+  while (!finished) {
+    const result = await reader.read()
+    buffer += decoder.decode(result.value, { stream: !result.done })
+    const events = buffer.split(/\r?\n\r?\n/)
+    buffer = events.pop() ?? ''
+    for (const event of events) {
+      if (consumeEvent(event)) {
+        finished = true
+        break
+      }
+    }
+    if (result.done) {
+      if (buffer.trim()) consumeEvent(buffer)
+      break
+    }
+  }
+
+  return {
+    content: content || null,
+    responseModel,
+    finishReason,
+    truncated: finishReason === 'length',
+    refusal,
+    usage,
+  }
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -85,11 +169,11 @@ export class AiJsonClient {
     this.fetchImplementation = options.fetchImplementation ?? fetch
     this.onProgress = options.onProgress ?? (() => {})
     this.progressEnabled = options.onProgress !== undefined
-    this.transportRetries = options.transportRetries ?? 1
+    this.transportRetries = options.transportRetries ?? 2
     if (!Number.isInteger(this.transportRetries) || this.transportRetries < 0 || this.transportRetries > 3) {
       throw new QualityReviewerError('AI transport retries must be between 0 and 3')
     }
-    this.transportRetryDelayMs = options.transportRetryDelayMs ?? 1000
+    this.transportRetryDelayMs = options.transportRetryDelayMs ?? 2000
     if (!Number.isInteger(this.transportRetryDelayMs) || this.transportRetryDelayMs < 0 || this.transportRetryDelayMs > 30_000) {
       throw new QualityReviewerError('AI transport retry delay must be between 0 and 30000ms')
     }
@@ -242,15 +326,15 @@ export class AiJsonClient {
       } catch (error) {
         lastError = error
         if (!isTransientTransportError(error) || transportAttempt > this.transportRetries) break
-        const waitMs = this.transportRetryDelayMs * transportAttempt
+        const waitMs = this.transportRetryDelayMs * (2 ** (transportAttempt - 1))
         this.onProgress(
           `${operation} hit a transient connection error: ${errorWithCause(error)}. Retrying the same request in ${waitMs}ms (transport attempt ${transportAttempt + 1}/${this.transportRetries + 1}).`,
         )
         await delay(waitMs)
       }
     }
-    if (lastError instanceof QualityReviewerError) throw lastError
-    throw new QualityReviewerError(
+    if (lastError instanceof QualityReviewerError && !(lastError instanceof AiTransportError)) throw lastError
+    throw new AiTransportError(
       `${operation} request failed after ${transportAttemptsMade} transport attempt(s): ${errorWithCause(lastError)}`,
       { cause: lastError },
     )
@@ -279,12 +363,14 @@ export class AiJsonClient {
         }, 30_000)
       : null
     let recorded = false
+    const streaming = this.provider.supportsStreaming === true && this.provider.parseStreamChunk !== undefined
     const transportText = transportAttempt > 1 ? `, transport retry ${transportAttempt}` : ''
-    this.onProgress(`Starting ${operation} (attempt ${attempt}${transportText}, provider ${this.provider.id}, model ${this.provider.model}, thinking ${thinking}${thinking === 'enabled' ? `/${reasoningEffort}` : ''}, max output ${maxTokens}).`)
+    this.onProgress(`Starting ${operation} (attempt ${attempt}${transportText}, provider ${this.provider.id}, model ${this.provider.model}, thinking ${thinking}${thinking === 'enabled' ? `/${reasoningEffort}` : ''}, ${streaming ? 'streaming, ' : ''}max output ${maxTokens}).`)
 
     try {
       const providerRequest = this.provider.buildRequest({
         system, input, maxTokens, reasoningEffort, thinking,
+        stream: streaming,
         ...(jsonSchema ? { jsonSchema } : {}),
         ...(schemaName ? { schemaName } : {}),
       })
@@ -294,15 +380,21 @@ export class AiJsonClient {
         body: JSON.stringify(providerRequest.body),
         signal: controller.signal,
       })
-      const raw = await response.text()
-      let payload: unknown
-      try {
-        payload = raw ? JSON.parse(raw) as unknown : {}
-      } catch (error) {
-        if (!response.ok) payload = { error: { message: `HTTP ${response.status}: non-JSON response` } }
-        else throw new QualityReviewerError(`${operation} received a non-JSON response from ${this.provider.id}`, { cause: error })
+      let payload: unknown = {}
+      let normalized: NormalizedAiResponse
+      const isEventStream = response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') === true
+      if (response.ok && streaming && isEventStream) {
+        normalized = await readStreamingResponse(response, operation, this.provider)
+      } else {
+        const raw = await response.text()
+        try {
+          payload = raw ? JSON.parse(raw) as unknown : {}
+        } catch (error) {
+          if (!response.ok) payload = { error: { message: `HTTP ${response.status}: non-JSON response` } }
+          else throw new QualityReviewerError(`${operation} received a non-JSON response from ${this.provider.id}`, { cause: error })
+        }
+        normalized = this.provider.parseResponse(payload)
       }
-      const normalized = this.provider.parseResponse(payload)
       const status = !response.ok || normalized.refusal ? 'api_error' : normalized.truncated ? 'truncated' : 'completed'
       const trace: AiRequestTrace = {
         operation,
@@ -349,7 +441,7 @@ export class AiJsonClient {
         })
       }
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new QualityReviewerError(`${operation} timed out after ${this.timeoutMs}ms`, { cause: error })
+        throw new AiTransportError(`${operation} timed out after ${this.timeoutMs}ms`, { cause: error })
       }
       throw error
     } finally {

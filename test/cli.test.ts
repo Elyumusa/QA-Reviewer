@@ -53,6 +53,19 @@ test('accepts supported AI providers and the Claude alias', () => {
   assert.throws(() => parseArguments(['--provider', 'other']), /deepseek, openai, or anthropic/)
 })
 
+test('accepts an explicit test type and bounded transport recovery settings', () => {
+  const options = parseArguments([
+    '--test-type', 'component',
+    '--transport-retries', '3',
+    '--transport-retry-delay-ms', '5000',
+  ])
+  assert.equal(options.testType, 'component')
+  assert.equal(options.transportRetries, 3)
+  assert.equal(options.transportRetryDelayMs, 5000)
+  assert.throws(() => parseArguments(['--test-type', 'unit']), /component or e2e/)
+  assert.throws(() => parseArguments(['--transport-retries', '4']), /between 0 and 3/)
+})
+
 test('runs the CLI when invoked through the npm bin symlink', async t => {
   const directory = await mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'qa-review-bin-'))
   t.after(async () => rm(directory, { recursive: true, force: true }))

@@ -6,13 +6,14 @@ import type { ChunkAuditResult, CoverageAuditResult, GlobalAuditMapResult } from
 import type { ReviewContext, TestType } from './types.js'
 
 const CHECKPOINT_VERSION = 2
-export const AUDIT_PIPELINE_REVISION = 'audit-pipeline-v3-providers'
+export const AUDIT_PIPELINE_REVISION = 'audit-pipeline-v4-adaptive-streaming'
 
 export interface AuditCheckpoint {
   version: number
   key: string
   global_map?: GlobalAuditMapResult
   chunks: Record<string, ChunkAuditResult>
+  adaptive_chunks?: Record<string, string[]>
   coverage?: CoverageAuditResult
 }
 

@@ -46,7 +46,7 @@ WebAppTests/QualityReviewer/
 
 This keeps it close to the E2E tests while allowing it to inspect both test projects.
 
-The package references the existing standards in place. It does not copy or reinterpret them:
+The package prefers the standards in the WebApp checkout and carries exact fallback copies in its own `standards/` directory:
 
 ```text
 WebAppComponents/ClientApp/src/components/COMPONENT_TESTING_STANDARDS.md
@@ -56,7 +56,7 @@ WebAppTests/EndToEnd/TESTING_STANDARDS.md
 The project layouts used by classification and context discovery are:
 
 ```text
-WebAppComponents/ClientApp/src/components/**/*.cy.ts       component tests
+WebAppComponents/ClientApp/src/**/*.cy.ts                  component tests
 WebAppTests/EndToEnd/cypress/e2e/**/*.cy.ts                E2E tests
 WebAppComponents/ClientApp/cypress/**                      component support/fixtures
 WebAppTests/EndToEnd/cypress/**                             E2E support/fixtures
@@ -73,7 +73,7 @@ The application is deliberately layered. Each layer has one main responsibility:
 | CLI orchestration | Parse options, choose files, run the review pipeline, choose the exit code |
 | Git adapter | Find the repository, compute changed files, read file-specific diffs, list tracked files |
 | Classifier | Decide whether a file is a component, E2E, or unknown test |
-| Standards loader | Read the existing component/E2E standards and reject missing or empty documents |
+| Standards loader | Prefer project standards, fall back to bundled component/E2E standards, and reject empty documents |
 | Context collector | Build a small, bounded context bundle around one test |
 | Deterministic checks | Detect `.only`, numeric waits, and `.skip` without an API call |
 | Prompt builder | Turn standards, test, diff, context, and deterministic findings into model input |
@@ -210,11 +210,11 @@ An explicit `--files` request is different: a missing file, directory, unsupport
 |---|---|
 | `WebAppTests/EndToEnd/cypress/e2e/` | `e2e` |
 | Any `/cypress/e2e/` or `/e2e/` path | `e2e` |
-| `WebAppComponents/ClientApp/src/components/` | `component` |
+| `WebAppComponents/ClientApp/src/` | `component` |
 | `/cypress/component/`, `/components/`, or `/component/` | `component` |
 | Anything else | `unknown` |
 
-Classification is intentionally conservative. An unknown test is not discarded; it receives both standards documents.
+Classification is intentionally conservative outside the known WebApp layouts. An unknown test is not discarded; it receives both standards documents. `--test-type component` or `--test-type e2e` overrides classification for unusual locations.
 
 ### Step 4: Load standards
 
@@ -452,19 +452,32 @@ On the second attempt, the prompt adds an explicit instruction that the previous
 
 ### Step 8: Call the selected AI provider
 
-The CLI resolves `--provider` (or `QA_AI_PROVIDER`) and creates one of three native adapters: DeepSeek Chat Completions, OpenAI Chat Completions, or Anthropic Messages. `AiJsonClient` then applies the same timeout, progress heartbeat, bounded transport retry, truncation retry, targeted repair, telemetry, and local validation policy. No vendor SDK is required.
+The CLI resolves `--provider` (or `QA_AI_PROVIDER`) and creates one of three native adapters: DeepSeek Chat Completions, OpenAI Chat Completions, or Anthropic Messages. `AiJsonClient` then applies timeout, progress heartbeat, bounded transport recovery, truncation retry, targeted repair, telemetry, and local validation. No vendor SDK is required.
 
-DeepSeek remains the compatibility default. OpenAI uses Bearer authentication, a `developer` instruction message, `max_completion_tokens`, and JSON Object mode. Anthropic uses `x-api-key`, `anthropic-version`, a top-level `system` prompt, `max_tokens`, and `output_config`; it receives the exact native JSON Schema. Provider-specific environment variables and defaults are documented in [PROVIDER_GUIDE.md](./PROVIDER_GUIDE.md).
+DeepSeek remains the compatibility default and uses SSE streaming. Reasoning deltas keep the HTTP connection active but are not included in the JSON payload being validated; content deltas are assembled until `[DONE]`, and the final usage event supplies telemetry. OpenAI uses Bearer authentication, a `developer` instruction message, `max_completion_tokens`, and JSON Object mode. Anthropic uses `x-api-key`, `anthropic-version`, a top-level `system` prompt, `max_tokens`, and `output_config`; it receives the exact native JSON Schema. Provider-specific environment variables and defaults are documented in [PROVIDER_GUIDE.md](./PROVIDER_GUIDE.md).
 
 AI mode sends the applicable standards, complete test, diff, deterministic findings, required schema, and selected related-file content to the configured endpoint. Deterministic-only mode does not create an AI API request. Authentication values are used only in headers and are never printed or stored in reports.
 
-Focused calls have a 120-second timeout and retry with 12,000 output tokens after the initial 6,000-token allowance. Audit calls use their larger existing budgets and five-minute timeout. Progress and reports distinguish provider, requested model, model returned by the API, and normalized usage.
+Focused calls have a 120-second timeout and retry with 12,000 output tokens after the initial 6,000-token allowance. Audit calls use their larger budgets and five-minute timeout. A connection reset, socket failure, or timeout receives two retries by default with exponential 2/4-second delays; flags can select zero through three retries and the initial delay. Progress and reports distinguish provider, requested model, model returned by the API, and normalized usage.
 
 The exact JSON schema remains embedded in the prompt and is always enforced by the local TypeScript validator. Native structured output is an additional guard for Claude, not a replacement for local validation.
 
 ### Step 9: Validate the model response
 
-The response extractor reads `choices[0].message.content` from the non-streaming Chat Completions response. A completion with `finish_reason: "length"` is treated as truncated output and receives the same single retry as malformed JSON.
+For DeepSeek streaming, the response extractor parses SSE events, concatenates `choices[0].delta.content`, records the final finish reason and usage, and ignores private reasoning text. Providers returning a regular response are normalized from their native complete-message shape. A completion with `finish_reason: "length"` is treated as truncated output and receives the same single retry as malformed JSON.
+
+### Adaptive transport recovery
+
+Transport recovery is deliberately local to the failing semantic region:
+
+1. The original chunk uses high thinking and the normal 20,000-token allowance.
+2. Each HTTP request receives the configured number of exponential-backoff transport retries.
+3. If transport still fails and the region is larger than 100 lines, only that region is divided into smaller overlapping chunks with the same global line numbers and shared setup.
+4. Recovery chunks run sequentially with thinking disabled and a 10,000-token first allowance.
+5. Each successful recovery chunk is checkpointed immediately. Their bounded strengths and concerns are combined back into the original logical chunk before coverage and synthesis continue.
+6. If a small recovery chunk still cannot complete, the reviewer stops cleanly and emits an incomplete audit containing deterministic findings, completed strengths/concerns, metrics, diagnostics, and an explicit limitation.
+
+The checkpoint stores the subdivision manifest, so a rerun can resume adaptive children instead of forgetting which region was decomposed.
 
 The JSON is then validated manually against the same conceptual schema sent to the API. Validation checks:
 
@@ -907,7 +920,7 @@ Define the wire-adapter contract, implement DeepSeek/OpenAI/Anthropic translatio
 
 ### `src/aiJsonClient.ts`
 
-Owns provider-independent HTTP execution, JSON extraction, schema retry/targeted repair, bounded transport retry, normalized token telemetry, and request traces.
+Owns provider-independent HTTP execution, DeepSeek SSE assembly, schema retry/targeted repair, exponential transport retry, normalized token telemetry, and request traces.
 
 ### `src/responseSchema.ts`
 
@@ -1089,7 +1102,7 @@ npm test
 npm run typecheck
 ```
 
-The test suite currently contains 57 passing tests covering classification, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic chunking, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/repair/transport behavior, refusal handling, and API failure behavior.
+The test suite currently contains 64 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, exponential transport recovery, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/repair behavior, refusal handling, and API failure behavior.
 
 Additional verification included:
 

@@ -32,7 +32,7 @@ test('retries once when DeepSeek output is invalid JSON', async () => {
       assert.equal(requestBody.thinking.type, 'enabled')
       assert.equal(requestBody.reasoning_effort, 'high')
       assert.equal(requestBody.response_format.type, 'json_object')
-      assert.equal(requestBody.stream, false)
+      assert.equal(requestBody.stream, true)
 
       const content = requests === 1
         ? 'not json'

@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.1
 ```
 
 Then run the installed command from the WebApp root:
@@ -36,6 +36,8 @@ npx qa-review --help
 ```
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
+
+To upgrade an earlier GitHub installation to the adaptive transport release, run the same command with `#v0.1.1`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
@@ -152,7 +154,7 @@ This writes:
 - `address-audit.json`
 - `address-audit.md`
 
-Audit mode uses the correct standard automatically. Component paths use the component standard; E2E paths use the E2E standard. Unknown Cypress layouts require both standards.
+Audit mode uses the correct standard automatically. Cypress specs anywhere under `WebAppComponents/ClientApp/src/` use the component standard; E2E paths use the E2E standard. Unknown layouts require both standards. For an unusual repository layout, use `--test-type component` or `--test-type e2e`.
 
 ### Run deterministic checks only
 
@@ -177,12 +179,15 @@ Run `npx qa-review --help` to see the current help text. The options are:
 | `--base <ref>` | Git base ref used to find changed tests and compute file diffs | `origin/main` |
 | `--files <paths...>` | Explicit Cypress test paths; accepts multiple paths and comma-separated values | changed files |
 | `--provider <name>` | `deepseek`, `openai`, `anthropic`, or the `claude` alias | `QA_AI_PROVIDER` or `deepseek` |
+| `--test-type <component\|e2e>` | Override automatic test-type classification for all selected files | automatic |
 | `--output <path>` | Output report path | `qa-review-results.json` |
 | `--format <json\|markdown\|both>` | Report format | `json` |
 | `--mode <focused\|audit>` | Concise CI review or comprehensive multi-pass audit | `focused` |
 | `--deterministic-only` | Skip AI and run local deterministic checks | disabled |
 | `--audit-chunk-lines <count>` | Approximate lines per semantic audit evidence chunk; minimum 100 | `700` |
 | `--audit-concurrency <count>` | Number of parallel audit chunk requests; range 1–4 | `2` |
+| `--transport-retries <count>` | Retries for connection reset, socket, and timeout failures; range 0–3 | `2` |
+| `--transport-retry-delay-ms <ms>` | Initial retry delay; later retries use exponential backoff | `2,000` |
 | `--no-audit-cache` | Ignore and do not write reusable audit checkpoints | cache enabled |
 | `--max-related-files <count>` | Maximum related context files per test | `5` focused, `8` audit |
 | `--max-context-chars <count>` | Additional diff/context character budget | `50,000` focused, `180,000` audit |
@@ -213,7 +218,9 @@ Audit mode performs a bounded sequence of passes:
 4. Source and coverage cross-check.
 5. Final evidence synthesis and prioritization.
 
-The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, and token usage. Audit checkpoints are stored under `.qa-review-cache/` so completed passes can be reused after a later synthesis failure. Use `--no-audit-cache` for a clean run.
+The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, and token usage. DeepSeek uses SSE streaming so long reasoning responses continuously move data over the connection. Transient connection errors receive bounded exponential-backoff retries.
+
+If a semantic chunk still fails with a transport error, the reviewer splits only that region into smaller overlapping chunks and reviews those recovery chunks with thinking disabled and a smaller output allowance. Completed recovery work is checkpointed under the repository-root `.qa-review-cache/`. If a required pass ultimately fails, the report retains deterministic findings and completed chunk evidence, marks the audit incomplete, and exits `1` instead of returning an empty result. Use `--no-audit-cache` for a clean run.
 
 ## Troubleshooting
 
@@ -231,7 +238,7 @@ Change directory to the WebApp checkout and run the command again. The reviewer 
 
 ### Which standards are used?
 
-The reviewer classifies each Cypress file automatically. Component specs use the component standard, E2E specs use the E2E standard, and unknown layouts use both. A project standards file wins when present; the matching bundled standard is the fallback when it is absent.
+The reviewer classifies each Cypress file automatically. Component specs under `WebAppComponents/ClientApp/src/` use the component standard, E2E specs use the E2E standard, and unknown layouts use both. A project standards file wins when present; the matching bundled standard is the fallback when it is absent. Use `--test-type` when a custom path cannot be inferred safely.
 
 ### The command reports an invalid explicit file
 
@@ -244,6 +251,10 @@ Confirm that the provider selection matches the key, the model is available to t
 ### A large audit is slow or reaches a token limit
 
 This is expected for a large test. The audit uses semantic chunks, bounded concurrency, larger retry allowances, and checkpoint reuse. Reduce `--audit-concurrency` for provider rate limits or use focused mode for a quicker review.
+
+### `ECONNRESET`, `UND_ERR_SOCKET`, or a request timeout
+
+These mean the provider connection ended before a complete response arrived. DeepSeek streaming, two default retries, exponential backoff, and failed-chunk subdivision are automatic. If the provider remains unstable, try `--audit-concurrency 1`, increase `--transport-retries` up to `3`, or rerun later; completed checkpoints and partial evidence are preserved.
 
 ## CI usage
 

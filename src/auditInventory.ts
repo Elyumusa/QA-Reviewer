@@ -182,6 +182,27 @@ function lineFallbackChunks(
   return chunks
 }
 
+export function splitSourceChunk(content: string, chunk: SourceChunk): SourceChunk[] {
+  const lines = content.split('\n')
+  const span = chunk.end_line - chunk.start_line + 1
+  if (span <= 100) return [chunk]
+
+  const overlapLines = Math.min(20, Math.max(0, span - 1))
+  const maxLines = Math.max(100, Math.ceil((span + overlapLines) / 2))
+  return lineFallbackChunks(
+    lines,
+    maxLines,
+    overlapLines,
+    chunk.start_line - 1,
+    chunk.end_line,
+    chunk.scope,
+    chunk.shared_context,
+  ).map((child, index) => ({
+    ...child,
+    id: `adaptive-${chunk.id}-${index + 1}-${child.start_line}-${child.end_line}`,
+  }))
+}
+
 export function chunkSource(content: string, maxLines = 700, overlapLines = 30): SourceChunk[] {
   const lines = content.split('\n')
   if (maxLines < 100) throw new Error('Audit chunks must contain at least 100 lines')

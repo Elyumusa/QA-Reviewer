@@ -7,6 +7,7 @@ import {
   type AiHttpRequest,
   type AiProviderAdapter,
   type AiProviderRequest,
+  type NormalizedAiStreamChunk,
   type NormalizedAiResponse,
 } from './aiProvider.js'
 import type { AiTokenUsage } from './types.js'
@@ -40,6 +41,20 @@ function chatCompletionResponse(payload: unknown): NormalizedAiResponse {
   }
 }
 
+function chatCompletionStreamChunk(payload: unknown): NormalizedAiStreamChunk {
+  const root = objectValue(payload)
+  const choice = firstArrayObject(payload, 'choices')
+  const delta = objectValue(choice?.delta)
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null
+  return {
+    contentDelta: typeof delta?.content === 'string' ? delta.content : '',
+    responseModel: typeof root?.model === 'string' ? root.model : null,
+    finishReason,
+    refusal: typeof delta?.refusal === 'string' && delta.refusal.trim().length > 0,
+    usage: chatCompletionUsage(payload),
+  }
+}
+
 export interface ProviderAdapterOptions {
   apiKey: string
   model: string
@@ -48,6 +63,7 @@ export interface ProviderAdapterOptions {
 
 export class DeepSeekProviderAdapter implements AiProviderAdapter {
   readonly id = 'deepseek' as const
+  readonly supportsStreaming = true
   readonly model: string
   readonly endpoint: string
   private readonly apiKey: string
@@ -71,12 +87,14 @@ export class DeepSeekProviderAdapter implements AiProviderAdapter {
         ...(request.thinking === 'enabled' ? { reasoning_effort: request.reasoningEffort } : {}),
         response_format: { type: 'json_object' },
         max_tokens: request.maxTokens,
-        stream: false,
+        stream: request.stream ?? false,
+        ...(request.stream ? { stream_options: { include_usage: true } } : {}),
       },
     }
   }
 
   parseResponse(payload: unknown): NormalizedAiResponse { return chatCompletionResponse(payload) }
+  parseStreamChunk(payload: unknown): NormalizedAiStreamChunk { return chatCompletionStreamChunk(payload) }
   apiError(payload: unknown, status: number): string { return apiErrorMessage(payload, status) }
 }
 

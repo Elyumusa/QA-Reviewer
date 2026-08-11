@@ -64,7 +64,8 @@ AiProviderAdapter -------------------------------+
         v                                        |
 AiJsonClient                                     |
   - timeout and heartbeat                        |
-  - bounded transport retry                      |
+  - SSE streaming when the adapter supports it   |
+  - exponential bounded transport retry          |
   - truncation and refusal handling              |
   - JSON parse and schema retry                  |
   - targeted schema repair                       |
@@ -85,7 +86,7 @@ The original `DeepSeekJsonClient`, `DeepSeekReviewer`, and `DeepSeekAuditReviewe
 
 ### DeepSeek
 
-DeepSeek uses `POST /chat/completions`, Bearer authentication, `system` and `user` messages, `max_tokens`, thinking controls, and JSON Object mode. The exact schema is included in the prompt and enforced by the local TypeScript validator.
+DeepSeek uses `POST /chat/completions`, Bearer authentication, `system` and `user` messages, `max_tokens`, thinking controls, and JSON Object mode. It requests SSE streaming and reconstructs the final JSON from `content` deltas while ignoring private reasoning deltas. The final usage event supplies prompt, completion, reasoning, and cache-token telemetry. Streaming keeps long-running reasoning requests active at the HTTP layer and a reset during the stream safely retries the complete stateless request.
 
 ### OpenAI
 
@@ -124,10 +125,12 @@ Switching providers does not bypass standards. Component tests still use `COMPON
 - Malformed/non-HTTP endpoint: preflight fails before paid work.
 - Wrong or expired key: the vendor's HTTP error is written to the file error and request diagnostics; authentication failures are not retried.
 - Rate limit or unsupported model: treated as an HTTP/API failure and not blindly retried.
-- Socket/connect reset: one bounded transport retry is attempted.
+- Socket/connect reset or timeout: two retries are attempted by default, using exponential delays of 2 and 4 seconds. `--transport-retries` and `--transport-retry-delay-ms` can adjust the bounded policy.
+- Repeated standards-chunk transport failure: only that semantic region is subdivided, recovery chunks use non-thinking mode and smaller output limits, and their results are checkpointed.
 - Token limit: the logical pass retries once with the configured larger allowance.
 - Invalid JSON/schema: the logical pass performs the existing correction or targeted-repair path.
 - Vendor refusal: rejected; it cannot become a successful audit.
+- Exhausted recovery: the file is marked incomplete, exits `1`, and retains deterministic findings plus completed AI evidence and diagnostics.
 - No key desired: `--deterministic-only` works in focused mode and makes no provider request.
 
 Checkpoint identity includes provider, model, endpoint, pipeline revision, source, context, standards, and chunk configuration. Changing from DeepSeek to Claude therefore cannot reuse DeepSeek evidence checkpoints.

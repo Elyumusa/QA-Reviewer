@@ -11,6 +11,7 @@ export interface AiProviderRequest {
   maxTokens: number
   reasoningEffort: AiReasoningEffort
   thinking: AiThinkingMode
+  stream?: boolean
   jsonSchema?: JsonSchema
   schemaName?: string
 }
@@ -29,12 +30,22 @@ export interface NormalizedAiResponse {
   usage: AiTokenUsage
 }
 
+export interface NormalizedAiStreamChunk {
+  contentDelta: string
+  responseModel: string | null
+  finishReason: string | null
+  refusal: boolean
+  usage: AiTokenUsage
+}
+
 export interface AiProviderAdapter {
   readonly id: AiProviderId
   readonly model: string
   readonly endpoint: string
+  readonly supportsStreaming?: boolean
   buildRequest(request: AiProviderRequest): AiHttpRequest
   parseResponse(payload: unknown): NormalizedAiResponse
+  parseStreamChunk?(payload: unknown): NormalizedAiStreamChunk
   apiError(payload: unknown, status: number): string
 }
 

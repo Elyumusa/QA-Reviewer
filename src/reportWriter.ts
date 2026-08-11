@@ -52,6 +52,10 @@ export function terminalReport(report: ReviewReport): string {
     lines.push('', file.file)
     if (file.status === 'error') {
       lines.push(`  ERROR: ${file.summary}`)
+      for (const finding of file.findings) {
+        const category = finding.category === 'potential_coverage_gap' ? ' [potential coverage gap]' : ''
+        lines.push(`  PRESERVED ${finding.severity.toUpperCase()}: ${finding.rule} - ${finding.title} at line ${finding.line}${category}`)
+      }
     } else if (file.findings.length === 0) {
       lines.push('  PASS: No issues found')
     } else {
@@ -202,7 +206,7 @@ export function markdownReport(report: ReviewReport): string {
       else lines.push('', ...audit.limitations.map(limitation => `- ${limitation}`))
       lines.push(
         '',
-        `Audit mechanics: ${audit.execution.test_chunks_reviewed} test chunks, ${audit.execution.source_context_files_reviewed} related context files, ${audit.execution.ai_calls} API request(s). Provider: ${audit.execution.provider}. Requested model: ${audit.execution.requested_model}. API response model(s): ${audit.execution.response_models.join(', ') || 'not reported'}. Reused passes: ${audit.execution.reused_passes.join(', ') || 'none'}.`,
+        `Audit mechanics: ${audit.execution.test_chunks_reviewed}/${audit.execution.test_chunks_total} test chunks, ${audit.execution.source_context_files_reviewed} related context files, ${audit.execution.ai_calls} API request(s). Complete: ${audit.execution.complete}. Provider: ${audit.execution.provider}. Requested model: ${audit.execution.requested_model}. API response model(s): ${audit.execution.response_models.join(', ') || 'not reported'}. Reused passes: ${audit.execution.reused_passes.join(', ') || 'none'}. Adaptive recoveries: ${audit.execution.adaptive_recoveries.join(', ') || 'none'}.`,
       )
       if (audit.execution.requests.length > 0) {
         lines.push(

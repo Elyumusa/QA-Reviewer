@@ -217,3 +217,75 @@ test('bundled E2E standards are used for an E2E file when the project copy is ab
   assert.equal(report.files[0]?.status, 'pass')
   assert.equal(report.files[0]?.test_type, 'e2e')
 })
+
+test('an incomplete audit preserves deterministic findings and records partial execution', async t => {
+  const root = await createRepository(t)
+  await writeFile(path.join(root, 'tests/Example.cy.ts'), "it('waits', () => { cy.wait(100) })\n", 'utf8')
+  const server = createServer((request, response) => {
+    let raw = ''
+    request.setEncoding('utf8')
+    request.on('data', chunk => { raw += chunk })
+    request.on('end', () => {
+      const body = JSON.parse(raw) as { messages?: Array<{ content?: string }> }
+      const system = body.messages?.[0]?.content ?? ''
+      if (system.includes('global test-structure analyst')) {
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({
+          model: 'test-model',
+          choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+            summary: 'One test.',
+            suites: [], shared_infrastructure: [], cross_suite_patterns: [],
+            context_used: ['tests/Example.cy.ts'], limitations: [],
+          }) } }],
+        }))
+        return
+      }
+      request.socket.destroy()
+    })
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve())
+  }))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const environment = {
+    ...environmentWithoutDeepSeekKey(),
+    DEEPSEEK_API_KEY: 'test-key',
+    DEEPSEEK_MODEL: 'test-model',
+    DEEPSEEK_API_URL: `http://127.0.0.1:${address.port}/chat/completions`,
+  }
+
+  await assert.rejects(() => execFileAsync(process.execPath, [
+    cliPath,
+    '--mode', 'audit',
+    '--test-type', 'component',
+    '--transport-retries', '0',
+    '--files', 'tests/Example.cy.ts',
+    '--output', 'partial-audit.json',
+  ], { cwd: root, env: environment }))
+
+  const report = JSON.parse(await readFile(path.join(root, 'partial-audit.json'), 'utf8')) as {
+    status: string
+    summary: { high: number }
+    errors: string[]
+    files: Array<{
+      status: string
+      test_type: string
+      findings: Array<{ rule: string }>
+      audit?: { execution: { complete: boolean; test_chunks_reviewed: number; test_chunks_total: number } }
+    }>
+  }
+  assert.equal(report.status, 'completed_with_errors')
+  assert.equal(report.files[0]?.status, 'error')
+  assert.equal(report.files[0]?.test_type, 'component')
+  assert.ok(report.files[0]?.findings.some(finding => finding.rule === 'CYPRESS-ASYNC-001'))
+  assert.equal(report.summary.high, 1)
+  assert.equal(report.files[0]?.audit?.execution.complete, false)
+  assert.equal(report.files[0]?.audit?.execution.test_chunks_reviewed, 0)
+  assert.equal(report.files[0]?.audit?.execution.test_chunks_total, 1)
+  assert.equal(report.errors.length, 1)
+})

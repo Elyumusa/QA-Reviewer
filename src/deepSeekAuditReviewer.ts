@@ -1,4 +1,4 @@
-import { buildAuditInventory, chunkSource } from './auditInventory.js'
+import { buildAuditInventory, chunkSource, splitSourceChunk, type SourceChunk } from './auditInventory.js'
 import { AUDIT_PIPELINE_REVISION, AuditCheckpointStore, auditCheckpointKey } from './auditCheckpoint.js'
 import {
   buildAuditSynthesisRepairInput,
@@ -27,9 +27,9 @@ import {
   type CoverageAuditResult,
   type GlobalAuditMapResult,
 } from './auditSchema.js'
-import { AiJsonClient } from './aiJsonClient.js'
+import { AiJsonClient, AiTransportError } from './aiJsonClient.js'
 import { DeepSeekJsonClient, type DeepSeekClientOptions } from './deepSeekClient.js'
-import { QualityReviewerError } from './errors.js'
+import { QualityReviewerError, errorMessage } from './errors.js'
 import type { AuditDetails, Finding, ReviewContext, TestType } from './types.js'
 
 export interface DeepSeekAuditReviewerOptions extends DeepSeekClientOptions {
@@ -50,6 +50,7 @@ export interface AuditReviewResult {
   summary: string
   findings: Finding[]
   audit: AuditDetails
+  incomplete_error?: string
 }
 
 async function mapConcurrent<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
@@ -89,6 +90,46 @@ function validateTestLines(result: AuditSynthesisResult, lineCount: number): Aud
     if (!valid(issue.line)) throw new QualityReviewerError(`Audit placement issue has a line outside 1-${lineCount}`)
   }
   return result
+}
+
+function combineChunkResults(parent: SourceChunk, results: ChunkAuditResult[]): ChunkAuditResult {
+  const strengths = new Map<string, ChunkAuditResult['strengths'][number]>()
+  const concerns = new Map<string, ChunkAuditResult['concerns'][number]>()
+  for (const result of results) {
+    for (const strength of result.strengths) {
+      strengths.set(`${strength.title}:${strength.evidence_lines.join(',')}`, strength)
+    }
+    for (const concern of result.concerns) {
+      concerns.set(`${concern.title}:${concern.line}:${concern.end_line}`, concern)
+    }
+  }
+  return {
+    chunk_id: parent.id,
+    summary: `Recovered ${parent.id} through ${results.length} smaller evidence review(s): ${results.map(result => result.summary).join(' ')}`,
+    strengths: [...strengths.values()].slice(0, 5),
+    concerns: [...concerns.values()].slice(0, 12),
+    context_used: [...new Set(results.flatMap(result => result.context_used))],
+  }
+}
+
+function partialFindings(chunkResults: ChunkAuditResult[]): Finding[] {
+  return chunkResults.flatMap(result => result.concerns.map((concern, index): Finding => ({
+    line: concern.line,
+    end_line: concern.end_line,
+    severity: 'info',
+    rule: `AUDIT-PARTIAL-${concern.line}-${index + 1}`,
+    category: 'quality',
+    title: concern.title,
+    message: concern.description,
+    suggestion: concern.recommendation,
+    replacement_code: null,
+    specific_cypress_methods: [],
+    context_used: [`partial audit evidence from ${result.chunk_id}`],
+    confidence: concern.confidence,
+    source: 'ai',
+    standards_references: concern.standards_references,
+    impact: concern.impact,
+  })))
 }
 
 export class AiAuditReviewer {
@@ -133,11 +174,17 @@ export class AiAuditReviewer {
     })
     const checkpoint = await this.checkpointStore.load(checkpointKey)
     const reusedPasses: string[] = []
+    const adaptiveRecoveries: string[] = []
+    const collectedChunkResults = new Map<string, ChunkAuditResult>()
+    let globalMap: GlobalAuditMapResult | null = null
+    let coverageResult: CoverageAuditResult | null = null
+    checkpoint.adaptive_chunks ??= {}
     this.onProgress(
       `Inventory complete for ${context.test_file.path}: ${inventory.metrics.line_count} lines, ${inventory.metrics.test_count} tests, ${inventory.metrics.suite_count} suites, ${chunks.length} semantic audit chunks.`,
     )
 
-    const validateGlobalMapLines = (result: GlobalAuditMapResult): GlobalAuditMapResult => {
+    try {
+      const validateGlobalMapLines = (result: GlobalAuditMapResult): GlobalAuditMapResult => {
       const valid = (line: number): boolean => line >= 1 && line <= inventory.metrics.line_count
       if (!result.suites.every(suite => valid(suite.start_line) && valid(suite.end_line))) {
         throw new QualityReviewerError('Global audit map contains a suite line outside the test file')
@@ -149,7 +196,6 @@ export class AiAuditReviewer {
       return result
     }
 
-    let globalMap: GlobalAuditMapResult
     if (checkpoint.global_map) {
       globalMap = validateGlobalMapLines(validateGlobalAuditMap(checkpoint.global_map))
       reusedPasses.push('global full-file map')
@@ -170,9 +216,10 @@ export class AiAuditReviewer {
       checkpoint.global_map = globalMap
       await this.checkpointStore.save(checkpoint)
     }
+    if (!globalMap) throw new QualityReviewerError('Global audit map was not produced')
+    const activeGlobalMap = globalMap
 
-    const chunkResults = await mapConcurrent(chunks, this.chunkConcurrency, async chunk => {
-      const validate = (value: unknown): ChunkAuditResult => {
+    const validateChunk = (chunk: SourceChunk, value: unknown): ChunkAuditResult => {
         const result = validateChunkAudit(value)
         if (result.chunk_id && result.chunk_id !== chunk.id) {
           this.onProgress(`Normalizing model chunk_id ${result.chunk_id} to orchestrator chunk_id ${chunk.id}.`)
@@ -185,30 +232,89 @@ export class AiAuditReviewer {
           if (!inChunk(concern.line) || !inChunk(concern.end_line)) throw new QualityReviewerError(`Concern evidence is outside ${chunk.id}`)
         }
         return { ...result, chunk_id: chunk.id }
-      }
+    }
+
+    const requestChunk = async (chunk: SourceChunk, recoveryMode: boolean): Promise<ChunkAuditResult> => this.client.requestJson({
+      operation: `${recoveryMode ? 'adaptive ' : ''}audit standards chunk ${chunk.id}`,
+      system: chunkAuditInstructions,
+      input: buildChunkAuditInput({ testType, standards, context, inventory, deterministicFindings, chunk, globalMap: activeGlobalMap }),
+      retryInput: buildChunkAuditInput({ testType, standards, context, inventory, deterministicFindings, chunk, globalMap: activeGlobalMap, isRetry: true }),
+      validate: value => validateChunk(chunk, value),
+      maxTokens: recoveryMode ? 10_000 : 20_000,
+      maxRetryTokens: recoveryMode ? 20_000 : 40_000,
+      reasoningEffort: 'high',
+      thinking: recoveryMode ? 'disabled' : 'enabled',
+      retryThinking: recoveryMode ? 'disabled' : 'enabled',
+      jsonSchema: chunkAuditJsonSchema,
+      schemaName: 'audit_chunk',
+    })
+
+    const reviewChunk = async (chunk: SourceChunk, recoveryMode = false, depth = 0): Promise<ChunkAuditResult> => {
       const cached = checkpoint.chunks[chunk.id]
       if (cached) {
-        const result = validate(cached)
+        const result = validateChunk(chunk, cached)
+        collectedChunkResults.set(chunk.id, result)
         reusedPasses.push(`standards chunk ${chunk.id}`)
         this.onProgress(`Reusing checkpointed standards chunk ${chunk.id}.`)
         return result
       }
-      const result = await this.client.requestJson({
-        operation: `audit standards chunk ${chunk.id}`,
-        system: chunkAuditInstructions,
-        input: buildChunkAuditInput({ testType, standards, context, inventory, deterministicFindings, chunk, globalMap }),
-        retryInput: buildChunkAuditInput({ testType, standards, context, inventory, deterministicFindings, chunk, globalMap, isRetry: true }),
-        validate,
-        maxTokens: 20_000,
-        maxRetryTokens: 40_000,
-        reasoningEffort: 'high',
-        jsonSchema: chunkAuditJsonSchema,
-        schemaName: 'audit_chunk',
-      })
-      checkpoint.chunks[chunk.id] = result
-      await this.checkpointStore.save(checkpoint)
-      return result
-    })
+
+      const recoverFromChildren = async (children: SourceChunk[]): Promise<ChunkAuditResult> => {
+        const childResults: ChunkAuditResult[] = []
+        for (const child of children) {
+          childResults.push(await reviewChunk(child, true, depth + 1))
+        }
+        const combined = combineChunkResults(chunk, childResults)
+        checkpoint.chunks[chunk.id] = combined
+        collectedChunkResults.set(chunk.id, combined)
+        await this.checkpointStore.save(checkpoint)
+        return combined
+      }
+
+      const savedChildren = checkpoint.adaptive_chunks?.[chunk.id]
+      if (savedChildren?.length) {
+        const children = splitSourceChunk(context.test_file.content, chunk)
+        if (children.map(child => child.id).join('|') === savedChildren.join('|')) {
+          adaptiveRecoveries.push(chunk.id)
+          this.onProgress(`Resuming adaptive recovery for ${chunk.id} from ${children.length} smaller chunk(s).`)
+          return recoverFromChildren(children)
+        }
+      }
+
+      try {
+        const result = await requestChunk(chunk, recoveryMode)
+        checkpoint.chunks[chunk.id] = result
+        collectedChunkResults.set(chunk.id, result)
+        await this.checkpointStore.save(checkpoint)
+        return result
+      } catch (error) {
+        if (!(error instanceof AiTransportError)) throw error
+
+        const children = splitSourceChunk(context.test_file.content, chunk)
+        if (children.length === 1 || depth >= 2) {
+          if (!recoveryMode) {
+            adaptiveRecoveries.push(`${chunk.id} (non-thinking fallback)`)
+            this.onProgress(`Transport recovery for ${chunk.id}: retrying this small chunk with thinking disabled and a smaller output allowance.`)
+            const result = await requestChunk(chunk, true)
+            checkpoint.chunks[chunk.id] = result
+            collectedChunkResults.set(chunk.id, result)
+            await this.checkpointStore.save(checkpoint)
+            return result
+          }
+          throw error
+        }
+
+        adaptiveRecoveries.push(chunk.id)
+        checkpoint.adaptive_chunks![chunk.id] = children.map(child => child.id)
+        await this.checkpointStore.save(checkpoint)
+        this.onProgress(
+          `Transport recovery for ${chunk.id}: splitting only this failed region into ${children.length} smaller chunk(s) and disabling thinking for their evidence pass.`,
+        )
+        return recoverFromChildren(children)
+      }
+    }
+
+    const chunkResults = await mapConcurrent(chunks, this.chunkConcurrency, chunk => reviewChunk(chunk))
 
     const validateCoverage = (value: unknown): CoverageAuditResult => {
       const result = validateCoverageAudit(value)
@@ -217,7 +323,6 @@ export class AiAuditReviewer {
       }
       return result
     }
-    let coverageResult: CoverageAuditResult
     if (checkpoint.coverage) {
       coverageResult = validateCoverage(checkpoint.coverage)
       reusedPasses.push('source and coverage cross-check')
@@ -301,7 +406,9 @@ export class AiAuditReviewer {
         limitations: [...new Set([...coverageResult.limitations, ...synthesis.limitations])],
         context_actually_used: [...new Set(synthesis.context_actually_used)],
         execution: {
+          complete: true,
           test_chunks_reviewed: chunks.length,
+          test_chunks_total: chunks.length,
           source_context_files_reviewed: context.related_files.length,
           ai_calls: this.client.requestsMade - requestsAtStart,
           provider: this.client.providerId,
@@ -310,6 +417,7 @@ export class AiAuditReviewer {
           requests: requestTraces,
           checkpoint_key: checkpointKey,
           reused_passes: reusedPasses,
+          adaptive_recoveries: [...new Set(adaptiveRecoveries)],
           passes: [
             'deterministic inventory',
             'global full-file structure map',
@@ -319,6 +427,72 @@ export class AiAuditReviewer {
           ],
         },
       },
+    }
+    } catch (error) {
+      const failure = errorMessage(error)
+      const evidence = [...collectedChunkResults.values()]
+      const findings = partialFindings(evidence)
+      const strengths = new Map<string, ChunkAuditResult['strengths'][number]>()
+      for (const result of evidence) {
+        for (const strength of result.strengths) {
+          strengths.set(`${strength.title}:${strength.evidence_lines.join(',')}`, strength)
+        }
+      }
+      const requestTraces = this.client.traces.slice(tracesAtStart)
+      const responseModels = [...new Set(requestTraces
+        .map(trace => trace.response_model)
+        .filter((model): model is string => model !== null))]
+      const reviewedTopLevelChunks = chunks.filter(chunk => checkpoint.chunks[chunk.id] !== undefined).length
+      const limitations = [
+        `The audit stopped before final synthesis: ${failure}`,
+        'Completed chunk concerns are retained as informational partial evidence and have not received final severity prioritization.',
+        ...(globalMap?.limitations ?? []),
+        ...(coverageResult?.limitations ?? []),
+      ]
+      this.onProgress(
+        `Preserving partial audit evidence for ${context.test_file.path}: ${reviewedTopLevelChunks}/${chunks.length} top-level chunk(s) completed before failure.`,
+      )
+      return {
+        summary: `Audit incomplete after ${reviewedTopLevelChunks}/${chunks.length} test chunks; deterministic and completed AI evidence were preserved. ${failure}`,
+        findings,
+        incomplete_error: failure,
+        audit: {
+          overall_assessment: `This is a partial audit. ${reviewedTopLevelChunks} of ${chunks.length} top-level test chunks completed before the provider failure.`,
+          metrics: inventory.metrics,
+          metric_locations: inventory.metric_locations,
+          strengths: [...strengths.values()].slice(0, 12),
+          standards_assessment: [],
+          coverage_gaps: coverageResult?.coverage_gaps ?? [],
+          test_placement_issues: coverageResult?.test_placement_issues ?? [],
+          priorities: [],
+          limitations: [...new Set(limitations)],
+          context_actually_used: [...new Set([
+            ...(globalMap?.context_used ?? []),
+            ...evidence.flatMap(result => result.context_used),
+            ...(coverageResult?.context_used ?? []),
+          ])],
+          execution: {
+            complete: false,
+            test_chunks_reviewed: reviewedTopLevelChunks,
+            test_chunks_total: chunks.length,
+            source_context_files_reviewed: context.related_files.length,
+            ai_calls: this.client.requestsMade - requestsAtStart,
+            provider: this.client.providerId,
+            requested_model: this.client.requestedModel,
+            response_models: responseModels,
+            requests: requestTraces,
+            checkpoint_key: checkpointKey,
+            reused_passes: reusedPasses,
+            adaptive_recoveries: [...new Set(adaptiveRecoveries)],
+            passes: [
+              'deterministic inventory',
+              ...(globalMap ? ['global full-file structure map'] : []),
+              ...(evidence.length ? ['partial standards review by test chunk'] : []),
+              ...(coverageResult ? ['source and coverage cross-check'] : []),
+            ],
+          },
+        },
+      }
     }
   }
 

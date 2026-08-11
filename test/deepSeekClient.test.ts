@@ -124,6 +124,67 @@ test('retries one transient fetch failure and records both transport attempts', 
   assert.ok(progress.some(message => message.includes('transient connection error')))
 })
 
+test('assembles a DeepSeek SSE response while keeping streaming enabled', async () => {
+  let requestBody: Record<string, unknown> = {}
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key',
+    model: 'test-model',
+    fetchImplementation: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      const events = [
+        'data: {"model":"test-model","choices":[{"finish_reason":null,"delta":{"reasoning_content":"thinking"}}]}',
+        'data: {"model":"test-model","choices":[{"finish_reason":null,"delta":{"content":"{\\"value\\":\\"accepted"}}]}',
+        'data: {"model":"test-model","choices":[{"finish_reason":"stop","delta":{"content":"\\"}"}}]}',
+        'data: {"model":"test-model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":2}}}',
+        'data: [DONE]',
+      ].join('\n\n') + '\n\n'
+      return new Response(events, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    },
+  })
+
+  const result = await client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry',
+    validate: value => (value as { value: string }).value,
+  })
+
+  assert.equal(result, 'accepted')
+  assert.equal(requestBody.stream, true)
+  assert.deepEqual(requestBody.stream_options, { include_usage: true })
+  assert.equal(client.traces[0]?.finish_reason, 'stop')
+  assert.equal(client.traces[0]?.usage.reasoning_tokens, 2)
+})
+
+test('uses configurable exponential backoff for repeated transport resets', async () => {
+  let requests = 0
+  const progress: string[] = []
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key',
+    model: 'test-model',
+    transportRetries: 3,
+    transportRetryDelayMs: 1,
+    onProgress: message => progress.push(message),
+    fetchImplementation: async () => {
+      requests += 1
+      if (requests <= 3) {
+        const cause = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+        throw new TypeError('terminated', { cause })
+      }
+      return apiResponse(JSON.stringify({ value: 'accepted' }))
+    },
+  })
+
+  const result = await client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry',
+    validate: value => (value as { value: string }).value,
+  })
+
+  assert.equal(result, 'accepted')
+  assert.equal(requests, 4)
+  assert.ok(progress.some(message => message.includes('in 1ms')))
+  assert.ok(progress.some(message => message.includes('in 2ms')))
+  assert.ok(progress.some(message => message.includes('in 4ms')))
+})
+
 test('does not retry an API response error as a transport failure', async () => {
   let requests = 0
   const client = new DeepSeekJsonClient({

@@ -89,7 +89,7 @@ Before splitting local evidence, the model reads the complete numbered test with
 
 The chunker parses the TypeScript syntax tree and keeps complete top-level `describe`/`context` suites together. If the file has one large outer suite, as `Address.cy.ts` does, it descends into its nested suites and groups complete nested suites without exceeding the target size. Imports, helpers, hooks, and outer-suite setup are extracted as shared context and supplied to every child chunk.
 
-Only a single suite that is itself larger than the configured limit falls back to line windows with 30 lines of overlap. Every code line retains its original global line number.
+Only a single suite that is itself larger than the configured limit falls back to line windows with 30 lines of overlap. Every code line retains its original global line number. If one semantic region later exhausts its transport retries, only that failed region is split again into smaller overlapping recovery chunks; successful siblings are not repeated.
 
 The current `Address.cy.ts` becomes six semantic chunks aligned to areas such as rendering/dialogs, validation/address operations, geocoding/maps, autocomplete/geolocation, map interactions/helpers, and lifecycle/geodata.
 
@@ -108,7 +108,7 @@ Each chunk reviewer must inspect:
 
 The chunk response contains strengths and concerns, each with real evidence lines and standards references. Chunk output is intermediate evidence; it is not written directly as the final report.
 
-Chunk reviews are independent and run with bounded concurrency. The default concurrency is two, reducing elapsed time without producing an uncontrolled request burst.
+Chunk reviews are independent and run with bounded concurrency. The default concurrency is two, reducing elapsed time without producing an uncontrolled request burst. Adaptive recovery chunks run sequentially with thinking disabled and a 10,000-token first allowance so recovery reduces both connection duration and provider load.
 
 ### Pass 4: source and coverage cross-check
 
@@ -171,7 +171,7 @@ Additional audit checks ensure:
 - Coverage findings use only `low` or `info` severity.
 - The returned chunk ID matches the requested chunk.
 
-Malformed or truncated output is retried once for that pass. Parseable schema-invalid output uses a smaller targeted repair instead of repeating the full prompt. A transient fetch/socket/connect failure receives one bounded retry of the same HTTP request; timeouts and HTTP/API responses are not retried. If a required pass still cannot complete, that file receives `status: "error"`; the reviewer continues with other files.
+Malformed or truncated output is retried once for that pass. Parseable schema-invalid output uses a smaller targeted repair instead of repeating the full prompt. DeepSeek uses SSE streaming. Transient fetch/socket/connect failures and request timeouts receive two retries by default with exponential backoff; HTTP/API responses are not blindly retried. If a standards chunk still fails, only that chunk is adaptively split and retried without thinking. If a required pass still cannot complete, the file receives `status: "error"`, but deterministic findings and completed AI evidence remain in the report.
 
 Truncation uses an adaptive allowance:
 
@@ -185,7 +185,7 @@ These are generated-output limits, not account credit limits or input-context li
 
 Each chunk receives global metric counts but only the metric locations, named tests/suites, and deterministic findings whose lines fall inside that chunk. Earlier versions supplied global locations to every chunk, which could encourage a valid model to return an out-of-range line that the chunk validator then rejected.
 
-Findings remain advisory. A completed audit with high findings exits `0`; a tool/API/schema failure exits `1`.
+Findings remain advisory. A completed audit with high findings exits `0`; an incomplete audit or tool/API/schema failure exits `1`. Partial chunk concerns are labelled informational because final synthesis did not assign their normal severity.
 
 ## 5. Rich audit output
 
@@ -294,7 +294,7 @@ Without retries, an audit uses approximately:
 1 global map + number of semantic test chunks + 1 coverage pass + 1 synthesis pass
 ```
 
-For the current 3,161-line `Address.cy.ts`, the semantic chunker creates six chunks, so a clean uncached audit expects nine requests. A model-output retry or targeted repair adds one request for the affected pass; a transient connection retry adds one actual HTTP attempt.
+For the current 3,161-line `Address.cy.ts`, the semantic chunker creates six chunks, so a clean uncached audit expects nine logical requests. A model-output retry or targeted repair adds one request for the affected pass. A transient connection failure can add up to the configured transport attempts; adaptive recovery replaces only the failed chunk with smaller evidence requests.
 
 Global-map, semantic-chunk, and coverage results are stored in a content-addressed checkpoint under `.qa-review-cache/`. The key includes the test, standards, related context, model, provider, endpoint, chunk configuration, and explicit audit-pipeline revision. If synthesis fails, rerunning the same command reuses those passes and normally makes only the synthesis request. Source, standards, provider configuration, or pipeline-revision changes automatically produce a new key. A pipeline upgrade intentionally creates a one-time cache miss rather than reusing evidence produced by an incompatible prompt or schema. Use `--no-audit-cache` to bypass checkpoints.
 
@@ -304,7 +304,9 @@ The JSON report records the actual HTTP request count under:
 {
   "audit": {
     "execution": {
+      "complete": true,
       "test_chunks_reviewed": 6,
+      "test_chunks_total": 6,
       "source_context_files_reviewed": 5,
       "ai_calls": 9,
       "provider": "deepseek",
@@ -339,7 +341,8 @@ The JSON report records the actual HTTP request count under:
         "evidence synthesis and prioritization"
       ],
       "checkpoint_key": "content-addressed SHA-256 key",
-      "reused_passes": []
+      "reused_passes": [],
+      "adaptive_recoveries": []
     }
   }
 }
@@ -368,11 +371,11 @@ When output is truncated:
 
 When the API reports a different model from the requested model, the completion message prints both. `--quiet` suppresses these updates.
 
-While a non-streaming request remains active, the reviewer emits a heartbeat every 30 seconds. Audit requests have a five-minute timeout so larger synthesis/retry allowances are not prematurely terminated.
+The reviewer emits a heartbeat every 30 seconds. DeepSeek responses use SSE so reasoning and content deltas continuously cross the connection; OpenAI and Anthropic retain their native response mechanics. Audit requests have a five-minute per-transport-attempt timeout.
 
-If one concurrent chunk fails after its retry, the orchestrator stops scheduling new chunks and waits for already-active requests to settle before writing the final error report. Provider logs therefore cannot appear after `Report saved`.
+If one concurrent chunk fails after transport and adaptive recovery, the orchestrator stops scheduling new top-level chunks and waits for already-active requests to settle before writing the partial report. Provider logs therefore cannot appear after `Report saved`.
 
-If an audit still fails, the file-level JSON stores `provider_requests` and Markdown renders “Provider request diagnostics before failure,” preserving every completed attempt’s status, model, allowance, usage, duration, schema-attempt number, and transport-attempt number even though no final audit synthesis exists.
+If an audit remains incomplete, its normal `audit` object is retained with `execution.complete: false`, reviewed/total chunk counts, adaptive recovery names, request traces, deterministic metrics, completed strengths, informational partial concerns, and limitations. The top-level error and exit code still make the incomplete result unambiguous.
 
 Provider APIs are treated as stateless, so each pass includes the context it requires. Shared prompt prefixes may benefit from provider-side context caching, but the reviewer does not assume a cache hit.
 
@@ -472,13 +475,13 @@ The example is abbreviated: real output includes metrics, metric locations, stan
 | File | Audit responsibility |
 |---|---|
 | `src/cli.ts` | Parses `--mode audit`, applies audit context defaults, chooses the audit provider, and attaches rich output |
-| `src/auditInventory.ts` | Builds metrics and uses the TypeScript AST to create semantic suite/test chunks with shared setup; retains an overlapping fallback for oversized suites |
+| `src/auditInventory.ts` | Builds metrics, creates semantic suite/test chunks with shared setup, and subdivides a transport-failed region while preserving global lines |
 | `src/auditCheckpoint.ts` | Creates content-addressed checkpoint keys and atomically saves reusable global, chunk, and coverage results |
 | `src/auditPromptBuilder.ts` | Defines the specialized instructions and structured inputs for chunk, coverage, and synthesis passes |
 | `src/auditSchema.ts` | Defines all three intermediate/final JSON schemas and validates model output at runtime |
 | `src/deepSeekClient.ts` | Provides authenticated JSON requests, adaptive truncation retries, requested/returned model telemetry, token usage, timings, progress, and request traces |
 | `src/deepSeekConfig.ts` | Validates the key, model, and endpoint before any audit request |
-| `src/deepSeekAuditReviewer.ts` | Orchestrates the fixed pass graph, bounded concurrency, line validation, synthesis, and execution metadata |
+| `src/deepSeekAuditReviewer.ts` | Orchestrates the pass graph, bounded concurrency, adaptive failed-chunk recovery, partial evidence preservation, line validation, synthesis, and execution metadata |
 | `src/deepSeekReviewer.ts` | Retains the original single-pass focused reviewer using the shared DeepSeek client |
 | `src/types.ts` | Defines review mode, rich audit report structures, metrics, strengths, gaps, placement, priorities, and enhanced finding evidence |
 | `src/reportWriter.ts` | Writes the detailed audit Markdown sections while retaining focused output |

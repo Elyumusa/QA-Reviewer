@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildAuditInventory, chunkSource } from '../src/auditInventory.js'
+import { buildAuditInventory, chunkSource, splitSourceChunk } from '../src/auditInventory.js'
 
 test('builds a deterministic audit inventory with evidence lines', () => {
   const inventory = buildAuditInventory(`describe('address', () => {
@@ -78,4 +78,18 @@ ${filler}
   assert.deepEqual(chunks[0]?.scope, ['suite: outer', 'suite: first area'])
   assert.deepEqual(chunks[1]?.scope, ['suite: outer', 'suite: second area'])
   assert.ok(chunks.every(chunk => chunk.shared_context.includes('beforeEach')))
+})
+
+test('adaptively splits only a failed chunk while preserving global line numbers and context', () => {
+  const content = Array.from({ length: 320 }, (_, index) => `line ${index + 1}`).join('\n')
+  const parent = chunkSource(content, 320, 20)[0]
+  assert.ok(parent)
+
+  const children = splitSourceChunk(content, parent)
+  assert.equal(children.length, 2)
+  assert.equal(children[0]?.start_line, 1)
+  assert.equal(children.at(-1)?.end_line, 320)
+  assert.ok((children[1]?.start_line ?? 320) < (children[0]?.end_line ?? 1))
+  assert.ok(children.every(child => child.id.startsWith(`adaptive-${parent.id}`)))
+  assert.match(children[1]?.content ?? '', new RegExp(`^${children[1]?.start_line}: line ${children[1]?.start_line}`, 'm'))
 })

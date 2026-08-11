@@ -101,7 +101,9 @@ export interface AuditPriority {
 }
 
 export interface AuditExecution {
+  complete: boolean
   test_chunks_reviewed: number
+  test_chunks_total: number
   source_context_files_reviewed: number
   ai_calls: number
   provider: string
@@ -111,6 +113,7 @@ export interface AuditExecution {
   requests: AiRequestTrace[]
   checkpoint_key: string | null
   reused_passes: string[]
+  adaptive_recoveries: string[]
 }
 
 export interface AiTokenUsage {

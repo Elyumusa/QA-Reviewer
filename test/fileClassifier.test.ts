@@ -9,6 +9,10 @@ test('recognizes the WebApp component and E2E layouts', () => {
     'component',
   )
   assert.equal(
+    classifyTestFile('WebAppComponents/ClientApp/src/services/chatbot/Chatbot.cy.ts'),
+    'component',
+  )
+  assert.equal(
     classifyTestFile('WebAppTests/EndToEnd/cypress/e2e/zip-viewer/ZipViewer.cy.ts'),
     'e2e',
   )
