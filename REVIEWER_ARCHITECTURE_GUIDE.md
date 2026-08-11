@@ -224,7 +224,8 @@ The standards loader:
 
 - Reads only the document needed for `component` or `e2e`.
 - Reads and concatenates both documents for `unknown`.
-- Rejects a missing file with a path-specific error.
+- Prefers the matching document in the WebApp checkout.
+- Falls back to the matching copy bundled in the standalone package when the project document is absent.
 - Rejects an empty document.
 
 The standards content is passed to the model as source-of-truth input. The reviewer does not hard-code the full standards in its prompt.
@@ -796,13 +797,13 @@ npm run qa-review -- --help
 
 ## 8. CI mechanics
 
-The root `.gitlab-ci.yml` includes:
+The WebApp CI integration is retained as an opt-in configuration, but is disabled by default while the reviewer is being approved. The root `.gitlab-ci.yml` does not currently include the QA job. If the include is restored later, the job also requires `QA_REVIEW_CI_ENABLED=true` before it can run:
 
 ```text
 /.gitlab/qa-review.gitlab-ci.yml
 ```
 
-The job is named `qa-review:cypress` and:
+When enabled, the job is named `qa-review:cypress` and:
 
 1. Runs in the `approval` stage.
 2. Uses the configured Node container image.
@@ -876,7 +877,11 @@ Encapsulates all Git process calls. It uses `execFile`, not shell string interpo
 
 ### `src/standardsLoader.ts`
 
-Maps test types to the two existing standards files, reads them, checks that they are non-empty, and combines both for unknown test types.
+Maps test types to the two WebApp standards paths, reads project copies when present, falls back to the package’s `standards/` copies when needed, checks that documents are non-empty, and combines both for unknown test types.
+
+### `standards/`
+
+Carries the component and E2E standards with the published package so a standalone installation has a stable review baseline even when a checkout is missing one of the WebApp documents.
 
 ### `src/contextCollector.ts`
 
@@ -986,7 +991,7 @@ Prevents generated `dist`, dependencies, environment files, and local reports fr
 
 ### `.gitlab/qa-review.gitlab-ci.yml`
 
-Defines the merge-request job and report artifacts. The root `.gitlab-ci.yml` includes it.
+Defines the retained merge-request job and report artifacts. It is guarded by `QA_REVIEW_CI_ENABLED=true`, and the root `.gitlab-ci.yml` include is currently disabled until the reviewer is approved for CI.
 
 ## 10. What the reviewer can do today
 
@@ -1049,13 +1054,7 @@ The JSON/Markdown report is still written with `status: "completed_with_errors"`
 
 ### Missing standards
 
-The report records a file error such as:
-
-```text
-Missing standards file: /path/to/TESTING_STANDARDS.md
-```
-
-The process exits `1`.
+The loader first checks the WebApp path and then the matching package-bundled standard. A missing project copy therefore does not fail the review. An error is still reported if the bundled package asset is absent or if either selected document is empty.
 
 ### Git failure
 
@@ -1090,7 +1089,7 @@ npm test
 npm run typecheck
 ```
 
-The test suite currently contains 56 passing tests covering classification, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic chunking, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, missing standards, wrong-directory behavior, focused/audit diagnostics, request/validation/repair/transport behavior, refusal handling, and API failure behavior.
+The test suite currently contains 57 passing tests covering classification, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic chunking, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/repair/transport behavior, refusal handling, and API failure behavior.
 
 Additional verification included:
 

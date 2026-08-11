@@ -11,10 +11,12 @@ The reviewer is advisory. It does not execute Cypress, change your files, apply 
 - A checkout of the Levelbuild WebApp repository
 - A DeepSeek, OpenAI, or Anthropic API key for AI review
 
-The tool must be run with the WebApp checkout as its working directory, or from a subdirectory inside that checkout. It uses the repository root to find changed files, source context, fixtures, Cypress support files, and the project standards:
+The tool must be run with the WebApp checkout as its working directory, or from a subdirectory inside that checkout. It uses the repository root to find changed files, source context, fixtures, Cypress support files, and the project standards when they are available:
 
 - Component tests: `WebAppComponents/ClientApp/src/components/COMPONENT_TESTING_STANDARDS.md`
 - E2E tests: `WebAppTests/EndToEnd/TESTING_STANDARDS.md`
+
+The package also carries copies of both standards in its `standards/` directory. The WebApp copy is preferred so project-specific updates are respected; if a standards file is absent, the bundled copy is used automatically. This makes the reviewer usable from a standalone install without requiring the WebApp repository to carry those documents.
 
 ## Installation
 
@@ -195,7 +197,7 @@ JSON reports contain provider/model metadata, per-file status, findings, context
 The process exits with:
 
 - `0` when the review completed, even if findings were found
-- `1` when the reviewer could not complete reliably, for example because of a missing key, invalid provider configuration, invalid file path, missing standards file, API failure, malformed model output after retries, or an invalid report destination
+- `1` when the reviewer could not complete reliably, for example because of a missing key, invalid provider configuration, invalid file path, API failure, malformed model output after retries, or an invalid report destination
 
 Findings are advisory and do not make the command fail by themselves.
 
@@ -227,9 +229,9 @@ npx qa-review --deterministic-only --files path/to/Test.cy.ts
 
 Change directory to the WebApp checkout and run the command again. The reviewer needs Git to discover files and context.
 
-### The command reports a missing standards file
+### Which standards are used?
 
-Confirm that the WebApp checkout contains the expected component and/or E2E standards path. The reviewer does not invent replacement standards.
+The reviewer classifies each Cypress file automatically. Component specs use the component standard, E2E specs use the E2E standard, and unknown layouts use both. A project standards file wins when present; the matching bundled standard is the fallback when it is absent.
 
 ### The command reports an invalid explicit file
 
@@ -245,9 +247,9 @@ This is expected for a large test. The audit uses semantic chunks, bounded concu
 
 ## CI usage
 
-The repository’s GitLab job runs when a supported provider key is configured and Cypress tests change. Set `QA_AI_PROVIDER` when more than one key is present. If it is not set, CI preserves the compatibility order DeepSeek → OpenAI → Anthropic.
+The WebApp integration is intentionally disabled for now. The reviewer is a local, opt-in tool for the tester running it and does not run merely because an API key exists in CI. The retained GitLab job is guarded by `QA_REVIEW_CI_ENABLED=true` for a future approval; until that decision is made, run reviews locally from the WebApp checkout.
 
-Store provider keys as masked/protected CI variables. Never commit them to the WebApp or reviewer repository.
+Store provider keys as masked/protected variables if CI is enabled later. Never commit them to the WebApp or reviewer repository.
 
 ## Development and verification
 

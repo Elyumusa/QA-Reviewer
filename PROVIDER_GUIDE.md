@@ -106,7 +106,7 @@ The default `claude-sonnet-5` model provides the speed/capability balance intend
 Every run still:
 
 1. Resolves the Git repository and validates explicit files.
-2. Classifies a test as component or E2E and loads the matching project standard.
+2. Classifies a test as component or E2E and loads the matching WebApp standard, falling back to the copy bundled in the package when the project file is absent.
 3. Collects bounded source/support/fixture context.
 4. Runs deterministic checks.
 5. Runs focused review or the same global-map, semantic-chunk, coverage, and synthesis audit passes.
@@ -134,7 +134,7 @@ Checkpoint identity includes provider, model, endpoint, pipeline revision, sourc
 
 ## GitLab CI
 
-The merge-request job starts when any supported masked key exists. If `QA_AI_PROVIDER` is set, the CLI uses it. If it is absent, the job chooses the available key in DeepSeek → OpenAI → Anthropic order, preserving the original DeepSeek behavior. Set `QA_AI_PROVIDER` whenever CI stores more than one key so provider choice is unambiguous.
+The WebApp merge-request job is disabled while the reviewer is being approved. If the retained job is enabled later, it requires `QA_REVIEW_CI_ENABLED=true` in addition to the normal change and provider-key conditions. If `QA_AI_PROVIDER` is set, the CLI uses it; otherwise the job chooses the available key in DeepSeek → OpenAI → Anthropic order. Set `QA_AI_PROVIDER` whenever CI stores more than one key so provider choice is unambiguous.
 
 ## Adding another provider later
 

@@ -176,20 +176,44 @@ test('running outside a Git repository fails with a clear Git-root error', async
   )
 })
 
-test('missing standards become a structured per-file error', async t => {
+test('bundled standards are used when the WebApp copy is absent', async t => {
   const root = await createRepository(t)
   await rm(path.join(root, 'WebAppComponents/ClientApp/src/components/COMPONENT_TESTING_STANDARDS.md'))
 
-  await assert.rejects(() => execFileAsync(process.execPath, [
+  await execFileAsync(process.execPath, [
     cliPath,
     '--files', 'tests/Example.cy.ts',
     '--deterministic-only',
-    '--output', 'missing-standards.json',
-  ], { cwd: root, env: environmentWithoutDeepSeekKey() }))
+    '--output', 'bundled-standards.json',
+  ], { cwd: root, env: environmentWithoutDeepSeekKey() })
 
-  const report = JSON.parse(await readFile(path.join(root, 'missing-standards.json'), 'utf8')) as {
+  const report = JSON.parse(await readFile(path.join(root, 'bundled-standards.json'), 'utf8')) as {
+    status: string
     files: Array<{ status: string; summary: string }>
   }
-  assert.equal(report.files[0]?.status, 'error')
-  assert.match(report.files[0]?.summary ?? '', /Missing standards file/)
+  assert.equal(report.status, 'completed')
+  assert.equal(report.files[0]?.status, 'pass')
+  assert.match(report.files[0]?.summary ?? '', /No deterministic issues found/)
+})
+
+test('bundled E2E standards are used for an E2E file when the project copy is absent', async t => {
+  const root = await createRepository(t)
+  await mkdir(path.join(root, 'WebAppTests/EndToEnd/cypress/e2e'), { recursive: true })
+  await writeFile(path.join(root, 'WebAppTests/EndToEnd/cypress/e2e/Example.cy.ts'), "it('works', () => {})\n", 'utf8')
+  await rm(path.join(root, 'WebAppTests/EndToEnd/TESTING_STANDARDS.md'))
+
+  await execFileAsync(process.execPath, [
+    cliPath,
+    '--files', 'WebAppTests/EndToEnd/cypress/e2e/Example.cy.ts',
+    '--deterministic-only',
+    '--output', 'bundled-e2e-standards.json',
+  ], { cwd: root, env: environmentWithoutDeepSeekKey() })
+
+  const report = JSON.parse(await readFile(path.join(root, 'bundled-e2e-standards.json'), 'utf8')) as {
+    status: string
+    files: Array<{ status: string; test_type: string }>
+  }
+  assert.equal(report.status, 'completed')
+  assert.equal(report.files[0]?.status, 'pass')
+  assert.equal(report.files[0]?.test_type, 'e2e')
 })

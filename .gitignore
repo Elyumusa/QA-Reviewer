@@ -8,3 +8,4 @@ address-audit*.json
 address-audit*.md
 zip-viewer-audit*.json
 zip-viewer-audit*.md
+*.tgz

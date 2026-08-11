@@ -9,7 +9,8 @@
     "README.md",
     "AUDIT_MODE_GUIDE.md",
     "PROVIDER_GUIDE.md",
-    "REVIEWER_ARCHITECTURE_GUIDE.md"
+    "REVIEWER_ARCHITECTURE_GUIDE.md",
+    "standards"
   ],
   "bin": {
     "qa-review": "dist/src/cli.js"
