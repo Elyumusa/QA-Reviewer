@@ -1,0 +1,10 @@
+dist/
+node_modules/
+.env
+.qa-review-cache/
+qa-review-results.json
+qa-review-results.md
+address-audit*.json
+address-audit*.md
+zip-viewer-audit*.json
+zip-viewer-audit*.md
