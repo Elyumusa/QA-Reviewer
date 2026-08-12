@@ -121,7 +121,7 @@ test('retries one transient fetch failure and records both transport attempts', 
     [1, 'transport_error'],
     [2, 'completed'],
   ])
-  assert.ok(progress.some(message => message.includes('transient connection error')))
+  assert.ok(progress.some(message => message.includes('recoverable connection error')))
 })
 
 test('assembles a DeepSeek SSE response while keeping streaming enabled', async () => {
@@ -152,6 +152,20 @@ test('assembles a DeepSeek SSE response while keeping streaming enabled', async 
   assert.deepEqual(requestBody.stream_options, { include_usage: true })
   assert.equal(client.traces[0]?.finish_reason, 'stop')
   assert.equal(client.traces[0]?.usage.reasoning_tokens, 2)
+})
+
+test('treats a stream without the required DONE event as interrupted transport', async () => {
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key', model: 'test-model', transportRetries: 0,
+    fetchImplementation: async () => new Response(
+      'data: {"model":"test-model","choices":[{"finish_reason":"stop","delta":{"content":"{\\"value\\":\\"partial\\"}"}}]}\n\n',
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    ),
+  })
+  await assert.rejects(() => client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry', validate: value => value,
+  }), /ended before the \[DONE\] event/)
+  assert.equal(client.traces[0]?.status, 'transport_error')
 })
 
 test('uses configurable exponential backoff for repeated transport resets', async () => {
@@ -185,29 +199,114 @@ test('uses configurable exponential backoff for repeated transport resets', asyn
   assert.ok(progress.some(message => message.includes('in 4ms')))
 })
 
-test('does not retry an API response error as a transport failure', async () => {
+test('retries a rate-limit response and honors Retry-After', async () => {
   let requests = 0
+  const delays: number[] = []
   const client = new DeepSeekJsonClient({
     apiKey: 'test-key',
     model: 'test-model',
     transportRetryDelayMs: 0,
+    delayImplementation: async milliseconds => { delays.push(milliseconds) },
     fetchImplementation: async () => {
       requests += 1
-      return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
-        status: 429,
-        headers: { 'Content-Type': 'application/json' },
-      })
+      if (requests < 3) {
+        return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '3' },
+        })
+      }
+      return apiResponse(JSON.stringify({ value: 'accepted' }))
     },
   })
 
-  await assert.rejects(
-    () => client.requestJson({
-      system: 'Return JSON.',
-      input: 'input',
-      retryInput: 'retry',
-      validate: value => value,
-    }),
-    /rate limited/,
-  )
+  const result = await client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry',
+    validate: value => (value as { value: string }).value,
+  })
+  assert.equal(result, 'accepted')
+  assert.equal(requests, 3)
+  assert.deepEqual(delays, [3000, 3000])
+})
+
+test('does not retry a permanent API response error', async () => {
+  let requests = 0
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key', model: 'test-model', transportRetryDelayMs: 0,
+    fetchImplementation: async () => {
+      requests += 1
+      return new Response(JSON.stringify({ error: { message: 'invalid request' } }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      })
+    },
+  })
+  await assert.rejects(() => client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry', validate: value => value,
+  }), /invalid request/)
   assert.equal(requests, 1)
+})
+
+test('uses longer DNS recovery intervals without sleeping in the test', async () => {
+  let requests = 0
+  const delays: number[] = []
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key', model: 'test-model', transportRetries: 3, transportRetryDelayMs: 2000,
+    delayImplementation: async milliseconds => { delays.push(milliseconds) },
+    fetchImplementation: async () => {
+      requests += 1
+      if (requests < 4) {
+        const cause = Object.assign(new Error('getaddrinfo ENOTFOUND api.deepseek.com'), { code: 'ENOTFOUND' })
+        throw new TypeError('fetch failed', { cause })
+      }
+      return apiResponse(JSON.stringify({ value: 'accepted' }))
+    },
+  })
+  const result = await client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry',
+    validate: value => (value as { value: string }).value,
+  })
+  assert.equal(result, 'accepted')
+  assert.deepEqual(delays, [5000, 15000, 30000])
+})
+
+test('keeps an active SSE stream alive beyond the inactivity interval', async () => {
+  const encoder = new TextEncoder()
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key', model: 'test-model', timeoutMs: 500, connectionTimeoutMs: 50,
+    streamInactivityTimeoutMs: 35, transportRetries: 0,
+    fetchImplementation: async () => new Response(new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const event of [
+          ': keep-alive\n\n',
+          'data: {"model":"test-model","choices":[{"finish_reason":null,"delta":{"content":"{\\"value\\":"}}]}\n\n',
+          ': keep-alive\n\n',
+          'data: {"model":"test-model","choices":[{"finish_reason":"stop","delta":{"content":"\\"accepted\\"}"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]) {
+          await new Promise(resolve => setTimeout(resolve, 20))
+          controller.enqueue(encoder.encode(event))
+        }
+        controller.close()
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+  })
+  const result = await client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry',
+    validate: value => (value as { value: string }).value,
+  })
+  assert.equal(result, 'accepted')
+})
+
+test('aborts a silent SSE stream using the inactivity timeout', async () => {
+  const client = new DeepSeekJsonClient({
+    apiKey: 'test-key', model: 'test-model', timeoutMs: 500, connectionTimeoutMs: 50,
+    streamInactivityTimeoutMs: 20, transportRetries: 0,
+    fetchImplementation: async (_input, init) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+  })
+  await assert.rejects(() => client.requestJson({
+    system: 'Return JSON.', input: 'input', retryInput: 'retry', validate: value => value,
+  }), /stream was inactive for 20ms/)
 })

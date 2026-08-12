@@ -102,6 +102,7 @@ export interface AuditPriority {
 
 export interface AuditExecution {
   complete: boolean
+  global_map_source: 'ai' | 'checkpoint' | 'deterministic_fallback' | 'not_available'
   test_chunks_reviewed: number
   test_chunks_total: number
   source_context_files_reviewed: number

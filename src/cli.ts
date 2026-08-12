@@ -42,6 +42,9 @@ interface CliOptions {
   auditConcurrency: number
   transportRetries: number
   transportRetryDelayMs: number
+  requestTimeoutMs: number | null
+  connectionTimeoutMs: number
+  streamInactivityTimeoutMs: number
   auditCache: boolean
   quiet: boolean
   help: boolean
@@ -66,8 +69,11 @@ Options:
   --deterministic-only         Skip AI review (useful without an API key)
   --audit-chunk-lines <count>  Lines per audit evidence chunk (default: 700)
   --audit-concurrency <count>  Parallel audit chunk requests, 1-4 (default: 2)
-  --transport-retries <count>  Retries for reset/timeout errors, 0-3 (default: 2)
+  --transport-retries <count>  Retries for recoverable transport/API errors, 0-3 (default: 2)
   --transport-retry-delay-ms <ms>  Initial exponential retry delay (default: 2000)
+  --request-timeout-ms <ms>    Total safety ceiling (audit default: 900000; focused: 120000)
+  --connection-timeout-ms <ms> Time allowed for response headers (default: 30000)
+  --stream-inactivity-timeout-ms <ms>  Maximum silence while streaming (default: 90000)
   --no-audit-cache            Ignore and do not write reusable audit checkpoints
   --max-related-files <count>  Related context files per test (default: 5)
   --max-context-chars <count>  Additional diff/context character budget (default: 50000)
@@ -120,6 +126,9 @@ export function parseArguments(args: string[]): CliOptions {
     auditConcurrency: 2,
     transportRetries: 2,
     transportRetryDelayMs: 2000,
+    requestTimeoutMs: null,
+    connectionTimeoutMs: 30_000,
+    streamInactivityTimeoutMs: 90_000,
     auditCache: true,
     quiet: false,
     help: false,
@@ -208,6 +217,21 @@ export function parseArguments(args: string[]): CliOptions {
       case '--transport-retry-delay-ms':
         options.transportRetryDelayMs = nonNegativeInteger(requiredValue(args, index, argument), argument)
         if (options.transportRetryDelayMs > 30_000) throw new QualityReviewerError('--transport-retry-delay-ms must be between 0 and 30000')
+        index += 1
+        break
+      case '--request-timeout-ms':
+        options.requestTimeoutMs = positiveInteger(requiredValue(args, index, argument), argument)
+        if (options.requestTimeoutMs > 1_800_000) throw new QualityReviewerError('--request-timeout-ms must be between 1 and 1800000')
+        index += 1
+        break
+      case '--connection-timeout-ms':
+        options.connectionTimeoutMs = positiveInteger(requiredValue(args, index, argument), argument)
+        if (options.connectionTimeoutMs > 300_000) throw new QualityReviewerError('--connection-timeout-ms must be between 1 and 300000')
+        index += 1
+        break
+      case '--stream-inactivity-timeout-ms':
+        options.streamInactivityTimeoutMs = positiveInteger(requiredValue(args, index, argument), argument)
+        if (options.streamInactivityTimeoutMs > 600_000) throw new QualityReviewerError('--stream-inactivity-timeout-ms must be between 1 and 600000')
         index += 1
         break
       case '--no-audit-cache':
@@ -327,7 +351,9 @@ export async function run(args = process.argv.slice(2)): Promise<number> {
       const client = new AiJsonClient({
         provider: configuration.adapter,
         onProgress: progress,
-        timeoutMs: options.mode === 'audit' ? 300_000 : 120_000,
+        timeoutMs: options.requestTimeoutMs ?? (options.mode === 'audit' ? 900_000 : 120_000),
+        connectionTimeoutMs: options.connectionTimeoutMs,
+        streamInactivityTimeoutMs: options.streamInactivityTimeoutMs,
         transportRetries: options.transportRetries,
         transportRetryDelayMs: options.transportRetryDelayMs,
       })

@@ -124,6 +124,97 @@ test('runs inventory, chunk, coverage, and synthesis as a bounded audit workflow
   assert.ok(progress.some(message => message.includes('audit final synthesis')))
 })
 
+test('repairs a parseable global map without repeating the full test prompt', async () => {
+  const context: ReviewContext = {
+    test_file: { path: 'Repair.cy.ts', content: "describe('repair', () => {\n  it('renders', () => cy.get('x-repair').should('exist'))\n})" },
+    diff: '', related_files: [],
+  }
+  const requests: Array<{ system: string; user: string; thinking: string }> = []
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }>; thinking: { type: string } }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      requests.push({ system, user, thinking: body.thinking.type })
+      if (system.includes('global test-structure analyst')) return response({
+        summary: 'Repair suite.', suites: [{ name: 'repair', start_line: 1, end_line: 3, purpose: 'Rendering', key_behaviors: ['renders'] }],
+        shared_infrastructure: [],
+        cross_suite_patterns: [{ title: 'Observable', description: 'Rendered output.', evidence_lines: '2', assessment: 'strength' }],
+        context_used: ['Repair.cy.ts'], limitations: [],
+      })
+      if (system.includes('repair a nearly valid Levelbuild Cypress global-map')) return response({
+        summary: 'Repair suite.', suites: [{ name: 'repair', start_line: 1, end_line: 3, purpose: 'Rendering', key_behaviors: ['renders'] }],
+        shared_infrastructure: [],
+        cross_suite_patterns: [{ title: 'Observable', description: 'Rendered output.', evidence_lines: [2], assessment: 'strength' }],
+        context_used: ['Repair.cy.ts'], limitations: [],
+      })
+      if (system.includes('test-quality evidence analyst')) return response({
+        chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Observable check.', strengths: [], concerns: [], context_used: ['Repair.cy.ts'],
+      })
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'No source context.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [], context_used: ['Repair.cy.ts'], limitations: [],
+      })
+      return response({
+        overall_assessment: 'Repaired audit.', summary: 'Repaired.', strengths: [], findings: [], standards_assessment: [], coverage_gaps: [],
+        test_placement_issues: [], priorities: [], limitations: [], context_actually_used: ['Repair.cy.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', '# Standards', context, [])
+  const repairRequest = requests.find(request => request.system.includes('repair a nearly valid Levelbuild Cypress global-map'))
+  assert.equal(result.audit.execution.complete, true)
+  assert.equal(result.audit.execution.global_map_source, 'ai')
+  assert.equal(repairRequest?.thinking, 'disabled')
+  assert.match(repairRequest?.user ?? '', /positive integer array/)
+  assert.doesNotMatch(repairRequest?.user ?? '', /complete_numbered_test_file/)
+  assert.equal(requests.filter(request => request.system.includes('global test-structure analyst')).length, 1)
+})
+
+test('continues chunk analysis with a deterministic global map after transport failure', async () => {
+  const context: ReviewContext = {
+    test_file: { path: 'Fallback.cy.ts', content: "describe('fallback', () => {\n  beforeEach(() => cy.viewport(800, 600))\n  it('renders', () => cy.get('x-fallback').should('exist'))\n})" },
+    diff: '', related_files: [],
+  }
+  const progress: string[] = []
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    transportRetries: 0, onProgress: message => progress.push(message),
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      if (system.includes('global test-structure analyst')) {
+        const cause = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+        throw new TypeError('terminated', { cause })
+      }
+      if (system.includes('test-quality evidence analyst')) {
+        assert.match(user, /Deterministic fallback map/)
+        return response({
+          chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Fallback-guided chunk.', strengths: [], concerns: [], context_used: ['Fallback.cy.ts'],
+        })
+      }
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'No source context.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [], context_used: ['Fallback.cy.ts'], limitations: [],
+      })
+      return response({
+        overall_assessment: 'Fallback audit.', summary: 'Completed using fallback orientation.', strengths: [], findings: [], standards_assessment: [], coverage_gaps: [],
+        test_placement_issues: [], priorities: [], limitations: [], context_actually_used: ['Fallback.cy.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', '# Standards', context, [])
+  assert.equal(result.incomplete_error, undefined)
+  assert.equal(result.audit.execution.complete, true)
+  assert.equal(result.audit.execution.global_map_source, 'deterministic_fallback')
+  assert.equal(result.audit.execution.test_chunks_reviewed, 1)
+  assert.ok(result.audit.execution.adaptive_recoveries.includes('global full-file map (deterministic fallback)'))
+  assert.ok(result.audit.limitations.some(item => item.includes('deterministic syntax inventory')))
+  assert.ok(progress.some(message => message.includes('Continuing standards chunks')))
+})
+
 test('waits for active chunk requests, stops new work, and returns a partial audit after failure', async () => {
   const content = Array.from({ length: 250 }, (_, index) => `// ${index + 1}`).join('\n')
   const startedChunks: string[] = []

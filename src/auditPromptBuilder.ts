@@ -77,6 +77,10 @@ export const synthesisRepairInstructions = `You repair a nearly valid Levelbuild
 
 Preserve all supported analysis and evidence. Change only what is required to satisfy the supplied validation error and schema. Do not add new findings, selectors, endpoints, events, or application behavior. Return the complete repaired JSON object and nothing else.`
 
+export const globalMapRepairInstructions = `You repair a nearly valid Levelbuild Cypress global-map JSON object.
+
+Preserve every supported suite and observation. Change only what is required to satisfy the supplied validation error and schema. Evidence lines must be positive integer arrays containing real test-file line numbers. Do not repeat the source analysis or add new observations. Return the complete repaired JSON object and nothing else.`
+
 function section(name: string, content: string): string {
   return `<${name}>\n${content}\n</${name}>`
 }
@@ -115,6 +119,17 @@ export function buildGlobalAuditMapInput(options: {
     section('required_json_schema', JSON.stringify(globalAuditMapJsonSchema, null, 2)),
   ].join('\n\n')
   return options.isRetry ? retry(input) : input
+}
+
+export function buildGlobalAuditMapRepairInput(
+  invalidValue: unknown,
+  validationError: string,
+): string {
+  return [
+    `Validation error: ${validationError}`,
+    section('invalid_global_map_json', JSON.stringify(invalidValue, null, 2)),
+    section('required_json_schema', JSON.stringify(globalAuditMapJsonSchema, null, 2)),
+  ].join('\n\n')
 }
 
 export function buildChunkAuditInput(options: {

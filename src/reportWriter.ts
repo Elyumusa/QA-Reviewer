@@ -65,7 +65,7 @@ export function terminalReport(report: ReviewReport): string {
       }
     }
     if (file.audit) {
-      lines.push(`  Audit requests: ${file.audit.execution.ai_calls}; API response model(s): ${file.audit.execution.response_models.join(', ') || 'not reported'}`)
+      lines.push(`  Audit requests: ${file.audit.execution.ai_calls}; global map: ${file.audit.execution.global_map_source}; API response model(s): ${file.audit.execution.response_models.join(', ') || 'not reported'}`)
     }
   }
 
@@ -98,7 +98,6 @@ export function markdownReport(report: ReviewReport): string {
     `- Files reviewed: ${report.reviewed_files_count}`,
     `- AI provider: ${report.provider ?? 'none (deterministic checks only)'}`,
     `- Model: ${report.model ?? 'deterministic checks only'}`,
-    `- AI provider: ${report.provider ?? 'deterministic checks only'}`,
     `- Mode: ${report.mode}`,
     '',
     '| Critical | High | Medium | Low | Info |',
@@ -206,7 +205,7 @@ export function markdownReport(report: ReviewReport): string {
       else lines.push('', ...audit.limitations.map(limitation => `- ${limitation}`))
       lines.push(
         '',
-        `Audit mechanics: ${audit.execution.test_chunks_reviewed}/${audit.execution.test_chunks_total} test chunks, ${audit.execution.source_context_files_reviewed} related context files, ${audit.execution.ai_calls} API request(s). Complete: ${audit.execution.complete}. Provider: ${audit.execution.provider}. Requested model: ${audit.execution.requested_model}. API response model(s): ${audit.execution.response_models.join(', ') || 'not reported'}. Reused passes: ${audit.execution.reused_passes.join(', ') || 'none'}. Adaptive recoveries: ${audit.execution.adaptive_recoveries.join(', ') || 'none'}.`,
+        `Audit mechanics: ${audit.execution.test_chunks_reviewed}/${audit.execution.test_chunks_total} test chunks, ${audit.execution.source_context_files_reviewed} related context files, ${audit.execution.ai_calls} API request(s). Complete: ${audit.execution.complete}. Global map: ${audit.execution.global_map_source}. Provider: ${audit.execution.provider}. Requested model: ${audit.execution.requested_model}. API response model(s): ${audit.execution.response_models.join(', ') || 'not reported'}. Reused passes: ${audit.execution.reused_passes.join(', ') || 'none'}. Adaptive recoveries: ${audit.execution.adaptive_recoveries.join(', ') || 'none'}.`,
       )
       if (audit.execution.requests.length > 0) {
         lines.push(

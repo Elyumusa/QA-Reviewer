@@ -458,7 +458,7 @@ DeepSeek remains the compatibility default and uses SSE streaming. Reasoning del
 
 AI mode sends the applicable standards, complete test, diff, deterministic findings, required schema, and selected related-file content to the configured endpoint. Deterministic-only mode does not create an AI API request. Authentication values are used only in headers and are never printed or stored in reports.
 
-Focused calls have a 120-second timeout and retry with 12,000 output tokens after the initial 6,000-token allowance. Audit calls use their larger budgets and five-minute timeout. A connection reset, socket failure, or timeout receives two retries by default with exponential 2/4-second delays; flags can select zero through three retries and the initial delay. Progress and reports distinguish provider, requested model, model returned by the API, and normalized usage.
+Focused calls have a 120-second total ceiling and retry with 12,000 output tokens after the initial 6,000-token allowance. Audit calls use their larger budgets and a 15-minute total safety ceiling. Both use a 30-second response-header timeout; DeepSeek streams additionally use a 90-second inactivity timeout that resets whenever bytes arrive. Connection resets use exponential retry, DNS errors use longer 5/15/30-second recovery intervals, HTTP 429 honors `Retry-After`, and temporary 5xx responses are retried. Flags can tune every timeout and the bounded retry policy. Progress and reports distinguish provider, requested model, model returned by the API, stream activity, and normalized usage.
 
 The exact JSON schema remains embedded in the prompt and is always enforced by the local TypeScript validator. Native structured output is an additional guard for Claude, not a replacement for local validation.
 
@@ -479,6 +479,8 @@ Transport recovery is deliberately local to the failing semantic region:
 
 The checkpoint stores the subdivision manifest, so a rerun can resume adaptive children instead of forgetting which region was decomposed.
 
+The global map has its own recovery path because it runs before semantic chunks exist. Parseable schema-invalid output is repaired from the returned object alone. If the map remains unavailable for a non-permanent failure, the TypeScript inventory provides suite names, test names, hook locations, and conservative line ranges so evidence chunks can still run. Reports expose this as `execution.global_map_source: "deterministic_fallback"`; an AI map recovered on a later run invalidates chunk and coverage checkpoints that depended on the fallback orientation.
+
 The JSON is then validated manually against the same conceptual schema sent to the API. Validation checks:
 
 - Object shape
@@ -495,7 +497,7 @@ The validator adds `source: "ai"` after validation. The model is not asked to pr
 
 #### Retry behavior
 
-Malformed or truncated model output is retried once with the configured larger output allowance and an exact explanation. Parseable JSON with a narrow schema defect goes directly to a targeted non-thinking repair request, avoiding another full-context call. One transient fetch/socket/connect failure is retried; API responses such as a missing key, rate limit, or invalid endpoint are not retried.
+Malformed or truncated model output is retried once with the configured larger output allowance and an exact explanation. Parseable global-map or synthesis JSON with a narrow schema defect goes directly to a targeted non-thinking repair request, avoiding another full-context call. Recoverable fetch/socket/connect and DNS failures receive error-specific bounded retries. HTTP 429 and temporary 5xx responses are retried, while permanent 4xx responses such as a missing key or invalid parameters are not.
 
 If the second output is invalid, that file receives an error. The remaining files continue to be reviewed.
 
@@ -967,7 +969,7 @@ Uses an injected fake fetch implementation to verify:
 - System/user messages and embedded schema.
 - Thinking mode, high reasoning effort, and JSON Object request settings.
 - DeepSeek API-key validation.
-- One bounded retry for a transient connection failure and no retry for HTTP/API failures.
+- Error-specific bounded retry for connection, DNS, rate-limit, and temporary server failures, with no retry for permanent 4xx responses.
 - One retry when `finish_reason` reports token-limit truncation.
 
 ### `test/contextCollector.test.ts`
@@ -1075,7 +1077,7 @@ Invalid base refs, a non-Git working directory, or Git command failures become t
 
 ### API failure
 
-HTTP/API failures are reported as errors and are not retried. This includes incorrect credentials, rejected requests, rate limits, and unsupported models. A fetch/socket/connect failure that occurs before an HTTP response receives one bounded retry and records both transport attempts. Focused and audit failures both retain provider request diagnostics in the file report.
+Permanent HTTP/API failures are reported without retry. This includes incorrect credentials, invalid requests, and unsupported models. Rate limits and temporary 5xx responses receive bounded recovery; `Retry-After` is honored up to 60 seconds. Fetch/socket/connect and DNS failures use their own retry timing and every transport attempt is recorded. Focused and audit failures both retain provider request diagnostics in the file report.
 
 ### Malformed AI output
 
@@ -1102,7 +1104,7 @@ npm test
 npm run typecheck
 ```
 
-The test suite currently contains 64 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, exponential transport recovery, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/repair behavior, refusal handling, and API failure behavior.
+The test suite currently contains 71 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, deterministic global-map fallback, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, keep-alives, missing terminators, activity-aware timeouts, error-specific transport recovery, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/targeted-repair behavior, refusal handling, and API failure behavior.
 
 Additional verification included:
 

@@ -58,12 +58,21 @@ test('accepts an explicit test type and bounded transport recovery settings', ()
     '--test-type', 'component',
     '--transport-retries', '3',
     '--transport-retry-delay-ms', '5000',
+    '--request-timeout-ms', '600000',
+    '--connection-timeout-ms', '45000',
+    '--stream-inactivity-timeout-ms', '120000',
   ])
   assert.equal(options.testType, 'component')
   assert.equal(options.transportRetries, 3)
   assert.equal(options.transportRetryDelayMs, 5000)
+  assert.equal(options.requestTimeoutMs, 600000)
+  assert.equal(options.connectionTimeoutMs, 45000)
+  assert.equal(options.streamInactivityTimeoutMs, 120000)
   assert.throws(() => parseArguments(['--test-type', 'unit']), /component or e2e/)
   assert.throws(() => parseArguments(['--transport-retries', '4']), /between 0 and 3/)
+  assert.throws(() => parseArguments(['--request-timeout-ms', '1800001']), /between 1 and 1800000/)
+  assert.throws(() => parseArguments(['--connection-timeout-ms', '300001']), /between 1 and 300000/)
+  assert.throws(() => parseArguments(['--stream-inactivity-timeout-ms', '600001']), /between 1 and 600000/)
 })
 
 test('runs the CLI when invoked through the npm bin symlink', async t => {

@@ -65,24 +65,33 @@ test('requires a DeepSeek API key', () => {
   assert.throws(() => new DeepSeekReviewer({ apiKey: '', model: 'test-model' }), /DEEPSEEK_API_KEY/)
 })
 
-test('does not retry HTTP API failures', async () => {
+test('retries a temporary server failure', async () => {
   let requests = 0
   const reviewer = new DeepSeekReviewer({
     apiKey: 'test-key',
     model: 'test-model',
+    transportRetryDelayMs: 0,
     fetchImplementation: async () => {
       requests += 1
-      return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
-        status: 429,
+      if (requests === 3) {
+        return new Response(JSON.stringify({
+          choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+            file: 'test.cy.ts', test_type: 'unknown', status: 'pass', summary: 'Recovered.', findings: [],
+          }) } }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: { message: 'server busy' } }), {
+        status: 503,
         headers: { 'Content-Type': 'application/json' },
       })
     },
   })
 
-  await assert.rejects(() => reviewer.review('unknown', '# Standards', context, []), /rate limited/)
-  assert.equal(requests, 1)
-  assert.equal(reviewer.lastRequestTraces.length, 1)
-  assert.equal(reviewer.lastRequestTraces[0]?.status, 'api_error')
+  const result = await reviewer.review('unknown', '# Standards', context, [])
+  assert.equal(result.summary, 'Recovered.')
+  assert.equal(requests, 3)
+  assert.equal(reviewer.lastRequestTraces.length, 3)
+  assert.equal(reviewer.lastRequestTraces[0]?.status, 'transport_error')
 })
 
 test('retries a completion truncated by the token limit', async () => {

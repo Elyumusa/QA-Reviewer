@@ -7,9 +7,11 @@ import {
   buildCoverageAuditInput,
   buildEvidenceExcerpts,
   buildGlobalAuditMapInput,
+  buildGlobalAuditMapRepairInput,
   chunkAuditInstructions,
   coverageAuditInstructions,
   globalAuditMapInstructions,
+  globalMapRepairInstructions,
   synthesisAuditInstructions,
   synthesisRepairInstructions,
 } from './auditPromptBuilder.js'
@@ -27,7 +29,7 @@ import {
   type CoverageAuditResult,
   type GlobalAuditMapResult,
 } from './auditSchema.js'
-import { AiJsonClient, AiTransportError } from './aiJsonClient.js'
+import { AiApiError, AiJsonClient, AiTransportError } from './aiJsonClient.js'
 import { DeepSeekJsonClient, type DeepSeekClientOptions } from './deepSeekClient.js'
 import { QualityReviewerError, errorMessage } from './errors.js'
 import type { AuditDetails, Finding, ReviewContext, TestType } from './types.js'
@@ -132,6 +134,46 @@ function partialFindings(chunkResults: ChunkAuditResult[]): Finding[] {
   })))
 }
 
+function deterministicGlobalMap(
+  context: ReviewContext,
+  inventory: ReturnType<typeof buildAuditInventory>,
+): GlobalAuditMapResult {
+  const mappedSuites = inventory.suites.slice(0, 60)
+  const suites = mappedSuites.map((suite, index) => {
+    const nextLine = inventory.suites[index + 1]?.line ?? inventory.metrics.line_count + 1
+    const endLine = Math.max(suite.line, nextLine - 1)
+    return {
+      name: suite.name,
+      start_line: suite.line,
+      end_line: Math.min(endLine, inventory.metrics.line_count),
+      purpose: 'Deterministically identified suite; purpose will be assessed by the chunk reviewer.',
+      key_behaviors: inventory.tests
+        .filter(test => test.line >= suite.line && test.line <= endLine)
+        .slice(0, 12)
+        .map(test => test.name),
+    }
+  })
+  const infrastructureLines = [
+    ...inventory.metric_locations.before_each_hooks,
+    ...inventory.metric_locations.after_each_hooks,
+  ].sort((left, right) => left - right)
+  return {
+    summary: `Deterministic fallback map for ${inventory.metrics.suite_count} suite(s) and ${inventory.metrics.test_count} test(s).`,
+    suites,
+    shared_infrastructure: infrastructureLines.length > 0 ? [{
+      name: 'Shared Cypress hooks',
+      evidence_lines: [...new Set(infrastructureLines)],
+      purpose: 'Hook locations identified from the test syntax; their behavior remains for chunk review.',
+    }] : [],
+    cross_suite_patterns: [],
+    context_used: [context.test_file.path, 'deterministic audit inventory'],
+    limitations: [
+      'The AI global-map pass was unavailable, so suite boundaries and test names came from deterministic syntax inventory.',
+      'Cross-suite interpretation was intentionally deferred to evidence chunks and final synthesis.',
+    ],
+  }
+}
+
 export class AiAuditReviewer {
   private readonly client: AiJsonClient
   private readonly chunkLines: number
@@ -177,6 +219,7 @@ export class AiAuditReviewer {
     const adaptiveRecoveries: string[] = []
     const collectedChunkResults = new Map<string, ChunkAuditResult>()
     let globalMap: GlobalAuditMapResult | null = null
+    let globalMapSource: 'ai' | 'checkpoint' | 'deterministic_fallback' | 'not_available' = 'not_available'
     let coverageResult: CoverageAuditResult | null = null
     checkpoint.adaptive_chunks ??= {}
     this.onProgress(
@@ -196,25 +239,51 @@ export class AiAuditReviewer {
       return result
     }
 
-    if (checkpoint.global_map) {
+    if (checkpoint.global_map && checkpoint.global_map_source !== 'deterministic_fallback') {
       globalMap = validateGlobalMapLines(validateGlobalAuditMap(checkpoint.global_map))
+      globalMapSource = 'checkpoint'
       reusedPasses.push('global full-file map')
       this.onProgress('Reusing checkpointed global full-file map.')
     } else {
-      globalMap = await this.client.requestJson({
-        operation: 'audit global full-file map',
-        system: globalAuditMapInstructions,
-        input: buildGlobalAuditMapInput({ testType, standards, context, inventory }),
-        retryInput: buildGlobalAuditMapInput({ testType, standards, context, inventory, isRetry: true }),
-        validate: value => validateGlobalMapLines(validateGlobalAuditMap(value)),
-        maxTokens: 20_000,
-        maxRetryTokens: 40_000,
-        reasoningEffort: 'high',
-        jsonSchema: globalAuditMapJsonSchema,
-        schemaName: 'audit_global_map',
-      })
-      checkpoint.global_map = globalMap
-      await this.checkpointStore.save(checkpoint)
+      try {
+        globalMap = await this.client.requestJson({
+          operation: 'audit global full-file map',
+          system: globalAuditMapInstructions,
+          input: buildGlobalAuditMapInput({ testType, standards, context, inventory }),
+          retryInput: buildGlobalAuditMapInput({ testType, standards, context, inventory, isRetry: true }),
+          validate: value => validateGlobalMapLines(validateGlobalAuditMap(value)),
+          maxTokens: 20_000,
+          maxRetryTokens: 40_000,
+          reasoningEffort: 'high',
+          jsonSchema: globalAuditMapJsonSchema,
+          schemaName: 'audit_global_map',
+          repair: {
+            system: globalMapRepairInstructions,
+            buildInput: buildGlobalAuditMapRepairInput,
+            maxTokens: 20_000,
+          },
+        })
+        globalMapSource = 'ai'
+        if (checkpoint.global_map_source === 'deterministic_fallback') {
+          checkpoint.chunks = {}
+          checkpoint.adaptive_chunks = {}
+          delete checkpoint.coverage
+          this.onProgress('AI global map recovered; invalidated evidence checkpoints created with the deterministic fallback map.')
+        }
+        checkpoint.global_map = globalMap
+        checkpoint.global_map_source = 'ai'
+        await this.checkpointStore.save(checkpoint)
+      } catch (error) {
+        if (error instanceof AiApiError) throw error
+        globalMap = deterministicGlobalMap(context, inventory)
+        globalMapSource = 'deterministic_fallback'
+        adaptiveRecoveries.push('global full-file map (deterministic fallback)')
+        checkpoint.global_map = globalMap
+        checkpoint.global_map_source = 'deterministic_fallback'
+        await this.checkpointStore.save(checkpoint)
+        this.onProgress(`Global AI map could not be completed: ${errorMessage(error)}`)
+        this.onProgress('Continuing standards chunks with a deterministic suite/test map; the report will record this limitation.')
+      }
     }
     if (!globalMap) throw new QualityReviewerError('Global audit map was not produced')
     const activeGlobalMap = globalMap
@@ -403,10 +472,11 @@ export class AiAuditReviewer {
         coverage_gaps: synthesis.coverage_gaps,
         test_placement_issues: synthesis.test_placement_issues,
         priorities: [...synthesis.priorities].sort((left, right) => left.rank - right.rank),
-        limitations: [...new Set([...coverageResult.limitations, ...synthesis.limitations])],
+        limitations: [...new Set([...globalMap.limitations, ...coverageResult.limitations, ...synthesis.limitations])],
         context_actually_used: [...new Set(synthesis.context_actually_used)],
         execution: {
           complete: true,
+          global_map_source: globalMapSource,
           test_chunks_reviewed: chunks.length,
           test_chunks_total: chunks.length,
           source_context_files_reviewed: context.related_files.length,
@@ -471,8 +541,9 @@ export class AiAuditReviewer {
             ...evidence.flatMap(result => result.context_used),
             ...(coverageResult?.context_used ?? []),
           ])],
-          execution: {
-            complete: false,
+        execution: {
+          complete: false,
+          global_map_source: globalMapSource,
             test_chunks_reviewed: reviewedTopLevelChunks,
             test_chunks_total: chunks.length,
             source_context_files_reviewed: context.related_files.length,

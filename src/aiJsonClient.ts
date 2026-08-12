@@ -4,8 +4,12 @@ import type { AiRequestTrace, AiTokenUsage } from './types.js'
 
 export interface AiJsonClientOptions {
   provider: AiProviderAdapter
+  /** Backwards-compatible total request ceiling. */
   timeoutMs?: number
+  connectionTimeoutMs?: number
+  streamInactivityTimeoutMs?: number
   fetchImplementation?: FetchImplementation
+  delayImplementation?: (milliseconds: number) => Promise<void>
   onProgress?: (message: string) => void
   transportRetries?: number
   transportRetryDelayMs?: number
@@ -19,7 +23,27 @@ interface JsonRepairOptions {
 
 class TruncatedCompletionError extends QualityReviewerError {}
 class RefusedCompletionError extends QualityReviewerError {}
-export class AiTransportError extends QualityReviewerError {}
+type TransportFailureKind = 'connection' | 'dns' | 'timeout' | 'rate_limit' | 'server' | 'other'
+
+export class AiTransportError extends QualityReviewerError {
+  readonly kind: TransportFailureKind
+  readonly retryAfterMs: number | null
+
+  constructor(message: string, options?: ErrorOptions & { kind?: TransportFailureKind; retryAfterMs?: number | null }) {
+    super(message, options)
+    this.kind = options?.kind ?? 'other'
+    this.retryAfterMs = options?.retryAfterMs ?? null
+  }
+}
+
+export class AiApiError extends QualityReviewerError {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
 
 function usageText(usage: AiTokenUsage): string {
   const values = [
@@ -38,14 +62,39 @@ function errorWithCause(error: unknown): string {
   return `${error.message} (${code}${cause.message})`
 }
 
+function errorCode(error: unknown): string {
+  let current = error
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if ('code' in current && typeof current.code === 'string') return current.code
+    current = current.cause
+  }
+  return ''
+}
+
+function transportKind(error: unknown): TransportFailureKind {
+  if (error instanceof AiTransportError) return error.kind
+  const code = errorCode(error)
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'dns'
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') return 'timeout'
+  if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'EPIPE') return 'connection'
+  return 'other'
+}
+
 function isTransientTransportError(error: unknown): boolean {
   if (error instanceof AiTransportError) return true
   if (!(error instanceof Error) || error.name === 'AbortError' || error instanceof QualityReviewerError) return false
   if (error instanceof TypeError && /fetch failed|network|socket/i.test(error.message)) return true
-  const cause = error.cause
-  if (!(cause instanceof Error)) return false
-  const code = 'code' in cause && typeof cause.code === 'string' ? cause.code : ''
-  return ['ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'EAI_AGAIN'].includes(code)
+  const code = errorCode(error)
+  return ['ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE'].includes(code)
+}
+
+function retryAfterMilliseconds(response: Response): number | null {
+  const value = response.headers.get('retry-after')?.trim()
+  if (!value) return null
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000)
+  const date = Date.parse(value)
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null
 }
 
 function mergeUsage(current: AiTokenUsage, update: AiTokenUsage): AiTokenUsage {
@@ -63,6 +112,7 @@ async function readStreamingResponse(
   response: Response,
   operation: string,
   provider: AiProviderAdapter,
+  onActivity: (byteCount: number) => void,
 ): Promise<NormalizedAiResponse> {
   if (!response.body || !provider.parseStreamChunk) {
     throw new AiTransportError(`${operation} received an empty streaming response from ${provider.id}`)
@@ -102,15 +152,16 @@ async function readStreamingResponse(
     return false
   }
 
-  let finished = false
-  while (!finished) {
+  let sawDone = false
+  while (!sawDone) {
     const result = await reader.read()
+    if (result.value && result.value.byteLength > 0) onActivity(result.value.byteLength)
     buffer += decoder.decode(result.value, { stream: !result.done })
     const events = buffer.split(/\r?\n\r?\n/)
     buffer = events.pop() ?? ''
     for (const event of events) {
       if (consumeEvent(event)) {
-        finished = true
+        sawDone = true
         break
       }
     }
@@ -118,6 +169,10 @@ async function readStreamingResponse(
       if (buffer.trim()) consumeEvent(buffer)
       break
     }
+  }
+
+  if (!sawDone) {
+    throw new AiTransportError(`${operation} streaming response ended before the [DONE] event`, { kind: 'connection' })
   }
 
   return {
@@ -155,7 +210,10 @@ function extractOutputText(
 export class AiJsonClient {
   private readonly provider: AiProviderAdapter
   private readonly timeoutMs: number
+  private readonly connectionTimeoutMs: number
+  private readonly streamInactivityTimeoutMs: number
   private readonly fetchImplementation: FetchImplementation
+  private readonly delayImplementation: (milliseconds: number) => Promise<void>
   private readonly onProgress: (message: string) => void
   private readonly progressEnabled: boolean
   private readonly transportRetries: number
@@ -166,7 +224,17 @@ export class AiJsonClient {
   constructor(options: AiJsonClientOptions) {
     this.provider = options.provider
     this.timeoutMs = options.timeoutMs ?? 120_000
+    this.connectionTimeoutMs = options.connectionTimeoutMs ?? Math.min(30_000, this.timeoutMs)
+    this.streamInactivityTimeoutMs = options.streamInactivityTimeoutMs ?? Math.min(90_000, this.timeoutMs)
+    for (const [name, value] of [
+      ['AI total request timeout', this.timeoutMs],
+      ['AI connection timeout', this.connectionTimeoutMs],
+      ['AI stream inactivity timeout', this.streamInactivityTimeoutMs],
+    ] as const) {
+      if (!Number.isInteger(value) || value <= 0) throw new QualityReviewerError(`${name} must be a positive integer`)
+    }
     this.fetchImplementation = options.fetchImplementation ?? fetch
+    this.delayImplementation = options.delayImplementation ?? delay
     this.onProgress = options.onProgress ?? (() => {})
     this.progressEnabled = options.onProgress !== undefined
     this.transportRetries = options.transportRetries ?? 2
@@ -218,6 +286,7 @@ export class AiJsonClient {
       try {
         return await this.requestRepair(operation, 2, firstParsed, firstError, options.repair, options.validate, options.jsonSchema, options.schemaName)
       } catch (repairError) {
+        if (repairError instanceof AiTransportError || repairError instanceof AiApiError) throw repairError
         throw new QualityReviewerError(
           `${operation} failed validation and targeted repair. Validation: ${errorMessage(firstError)}. Repair: ${errorMessage(repairError)}`,
           { cause: repairError },
@@ -250,6 +319,7 @@ export class AiJsonClient {
         try {
           return await this.requestRepair(operation, 3, retryParsed, error, options.repair, options.validate, options.jsonSchema, options.schemaName)
         } catch (repairError) {
+          if (repairError instanceof AiTransportError || repairError instanceof AiApiError) throw repairError
           throw new QualityReviewerError(
             `${operation} failed after retry and targeted repair. First attempt: ${errorMessage(firstError)}. Retry: ${errorMessage(error)}. Repair: ${errorMessage(repairError)}`,
             { cause: repairError },
@@ -326,17 +396,25 @@ export class AiJsonClient {
       } catch (error) {
         lastError = error
         if (!isTransientTransportError(error) || transportAttempt > this.transportRetries) break
-        const waitMs = this.transportRetryDelayMs * (2 ** (transportAttempt - 1))
+        const kind = transportKind(error)
+        const allowedRetries = kind === 'timeout' ? Math.min(this.transportRetries, 1) : this.transportRetries
+        if (transportAttempt > allowedRetries) break
+        const configuredBase = this.transportRetryDelayMs
+        const waitMs = error instanceof AiTransportError && error.retryAfterMs !== null
+          ? Math.min(error.retryAfterMs, 60_000)
+          : kind === 'dns'
+            ? (configuredBase === 0 ? 0 : Math.max(configuredBase, 5000) * [1, 3, 6][transportAttempt - 1]!)
+            : configuredBase * (2 ** (transportAttempt - 1))
         this.onProgress(
-          `${operation} hit a transient connection error: ${errorWithCause(error)}. Retrying the same request in ${waitMs}ms (transport attempt ${transportAttempt + 1}/${this.transportRetries + 1}).`,
+          `${operation} hit a recoverable ${kind.replace('_', ' ')} error: ${errorWithCause(error)}. Retrying the same request in ${waitMs}ms (transport attempt ${transportAttempt + 1}/${allowedRetries + 1}).`,
         )
-        await delay(waitMs)
+        await this.delayImplementation(waitMs)
       }
     }
     if (lastError instanceof QualityReviewerError && !(lastError instanceof AiTransportError)) throw lastError
     throw new AiTransportError(
       `${operation} request failed after ${transportAttemptsMade} transport attempt(s): ${errorWithCause(lastError)}`,
-      { cause: lastError },
+      { cause: lastError, kind: transportKind(lastError) },
     )
   }
 
@@ -355,11 +433,29 @@ export class AiJsonClient {
     this.requestCounter += 1
     const started = Date.now()
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
+    let timeoutReason: 'connection' | 'inactivity' | 'total' | null = null
+    let responseStarted = false
+    let lastActivity = started
+    let streamedBytes = 0
+    const abortFor = (reason: 'connection' | 'inactivity' | 'total'): void => {
+      if (timeoutReason === null) timeoutReason = reason
+      controller.abort()
+    }
+    const totalTimeout = setTimeout(() => abortFor('total'), this.timeoutMs)
+    const connectionTimeout = setTimeout(() => abortFor('connection'), this.connectionTimeoutMs)
+    let inactivityTimeout: ReturnType<typeof setTimeout> | null = null
+    const resetInactivityTimeout = (): void => {
+      lastActivity = Date.now()
+      if (inactivityTimeout) clearTimeout(inactivityTimeout)
+      inactivityTimeout = setTimeout(() => abortFor('inactivity'), this.streamInactivityTimeoutMs)
+    }
     const heartbeat = this.progressEnabled
       ? setInterval(() => {
           const elapsedSeconds = Math.round((Date.now() - started) / 1000)
-          this.onProgress(`Still waiting for ${operation} (attempt ${attempt}, ${elapsedSeconds}s elapsed).`)
+          const activity = responseStarted
+            ? `stream received ${streamedBytes} bytes; ${Math.round((Date.now() - lastActivity) / 1000)}s since last data`
+            : 'waiting for response headers'
+          this.onProgress(`Still waiting for ${operation} (attempt ${attempt}, ${elapsedSeconds}s total; ${activity}).`)
         }, 30_000)
       : null
     let recorded = false
@@ -380,11 +476,17 @@ export class AiJsonClient {
         body: JSON.stringify(providerRequest.body),
         signal: controller.signal,
       })
+      responseStarted = true
+      clearTimeout(connectionTimeout)
       let payload: unknown = {}
       let normalized: NormalizedAiResponse
       const isEventStream = response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') === true
       if (response.ok && streaming && isEventStream) {
-        normalized = await readStreamingResponse(response, operation, this.provider)
+        resetInactivityTimeout()
+        normalized = await readStreamingResponse(response, operation, this.provider, byteCount => {
+          streamedBytes += byteCount
+          resetInactivityTimeout()
+        })
       } else {
         const raw = await response.text()
         try {
@@ -395,7 +497,9 @@ export class AiJsonClient {
         }
         normalized = this.provider.parseResponse(payload)
       }
-      const status = !response.ok || normalized.refusal ? 'api_error' : normalized.truncated ? 'truncated' : 'completed'
+      const resourceInterrupted = normalized.finishReason === 'insufficient_system_resource'
+      const retryableHttp = !response.ok && [429, 500, 502, 503, 504].includes(response.status)
+      const status = resourceInterrupted || retryableHttp ? 'transport_error' : !response.ok || normalized.refusal ? 'api_error' : normalized.truncated ? 'truncated' : 'completed'
       const trace: AiRequestTrace = {
         operation,
         attempt,
@@ -415,7 +519,17 @@ export class AiJsonClient {
       recorded = true
 
       if (!response.ok) {
-        throw new QualityReviewerError(`${operation} request failed (${this.provider.id}): ${this.provider.apiError(payload, response.status)}`)
+        const message = `${operation} request failed (${this.provider.id}): ${this.provider.apiError(payload, response.status)}`
+        if (response.status === 429 || response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504) {
+          throw new AiTransportError(message, {
+            kind: response.status === 429 ? 'rate_limit' : 'server',
+            retryAfterMs: retryAfterMilliseconds(response),
+          })
+        }
+        throw new AiApiError(message, response.status)
+      }
+      if (resourceInterrupted) {
+        throw new AiTransportError(`${operation} was interrupted because ${this.provider.id} reported insufficient system resources`, { kind: 'server' })
       }
       const modelMessage = normalized.responseModel && normalized.responseModel !== this.provider.model
         ? ` Requested ${this.provider.model}, but the API reported ${normalized.responseModel}.`
@@ -441,11 +555,18 @@ export class AiJsonClient {
         })
       }
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new AiTransportError(`${operation} timed out after ${this.timeoutMs}ms`, { cause: error })
+        const detail = timeoutReason === 'connection'
+          ? `did not receive response headers within ${this.connectionTimeoutMs}ms`
+          : timeoutReason === 'inactivity'
+            ? `stream was inactive for ${this.streamInactivityTimeoutMs}ms`
+            : `exceeded the total safety limit of ${this.timeoutMs}ms`
+        throw new AiTransportError(`${operation} ${detail}`, { cause: error, kind: 'timeout' })
       }
       throw error
     } finally {
-      clearTimeout(timeout)
+      clearTimeout(totalTimeout)
+      clearTimeout(connectionTimeout)
+      if (inactivityTimeout) clearTimeout(inactivityTimeout)
       if (heartbeat) clearInterval(heartbeat)
     }
   }

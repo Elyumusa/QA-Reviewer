@@ -171,7 +171,7 @@ Additional audit checks ensure:
 - Coverage findings use only `low` or `info` severity.
 - The returned chunk ID matches the requested chunk.
 
-Malformed or truncated output is retried once for that pass. Parseable schema-invalid output uses a smaller targeted repair instead of repeating the full prompt. DeepSeek uses SSE streaming. Transient fetch/socket/connect failures and request timeouts receive two retries by default with exponential backoff; HTTP/API responses are not blindly retried. If a standards chunk still fails, only that chunk is adaptively split and retried without thinking. If a required pass still cannot complete, the file receives `status: "error"`, but deterministic findings and completed AI evidence remain in the report.
+Malformed or truncated output is retried once for that pass. Parseable schema-invalid synthesis and global-map output uses a smaller targeted repair instead of repeating the full prompt. DeepSeek uses SSE streaming. Recoverable fetch/socket/connect, DNS, rate-limit, and server failures receive bounded error-specific retry timing; permanent 4xx responses are not retried. If the AI global map remains unavailable, the reviewer continues with a deterministic suite/test map and records that limitation. If a standards chunk still fails, only that chunk is adaptively split and retried without thinking. If a later required pass still cannot complete, the file receives `status: "error"`, but deterministic findings and completed AI evidence remain in the report.
 
 Truncation uses an adaptive allowance:
 
@@ -215,6 +215,8 @@ audit.limitations
 audit.context_actually_used
 audit.execution
 ```
+
+`audit.execution.global_map_source` is `ai`, `checkpoint`, `deterministic_fallback`, or `not_available`. A deterministic fallback does not hide the degradation: it is repeated in `audit.limitations` and `audit.execution.adaptive_recoveries`, while successful standards chunks and synthesis can still produce a completed audit.
 
 Audit findings also add optional rich evidence fields to the compatible finding contract:
 
@@ -371,7 +373,7 @@ When output is truncated:
 
 When the API reports a different model from the requested model, the completion message prints both. `--quiet` suppresses these updates.
 
-The reviewer emits a heartbeat every 30 seconds. DeepSeek responses use SSE so reasoning and content deltas continuously cross the connection; OpenAI and Anthropic retain their native response mechanics. Audit requests have a five-minute per-transport-attempt timeout.
+The reviewer emits a heartbeat every 30 seconds. DeepSeek responses use SSE so reasoning/content deltas and keep-alive comments continuously cross the connection; OpenAI and Anthropic retain their native response mechanics. The heartbeat distinguishes total elapsed time, waiting for headers, bytes received, and seconds since the last stream data. Defaults are 30 seconds for response headers, 90 seconds of stream inactivity, and a 15-minute audit safety ceiling. Active stream data resets the inactivity timeout but not the total ceiling.
 
 If one concurrent chunk fails after transport and adaptive recovery, the orchestrator stops scheduling new top-level chunks and waits for already-active requests to settle before writing the partial report. Provider logs therefore cannot appear after `Report saved`.
 

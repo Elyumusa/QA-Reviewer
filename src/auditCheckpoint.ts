@@ -5,13 +5,14 @@ import path from 'node:path'
 import type { ChunkAuditResult, CoverageAuditResult, GlobalAuditMapResult } from './auditSchema.js'
 import type { ReviewContext, TestType } from './types.js'
 
-const CHECKPOINT_VERSION = 2
-export const AUDIT_PIPELINE_REVISION = 'audit-pipeline-v4-adaptive-streaming'
+const CHECKPOINT_VERSION = 3
+export const AUDIT_PIPELINE_REVISION = 'audit-pipeline-v5-resilient-global-map'
 
 export interface AuditCheckpoint {
   version: number
   key: string
   global_map?: GlobalAuditMapResult
+  global_map_source?: 'ai' | 'deterministic_fallback'
   chunks: Record<string, ChunkAuditResult>
   adaptive_chunks?: Record<string, string[]>
   coverage?: CoverageAuditResult

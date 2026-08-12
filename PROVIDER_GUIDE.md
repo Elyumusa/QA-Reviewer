@@ -125,7 +125,10 @@ Switching providers does not bypass standards. Component tests still use `COMPON
 - Malformed/non-HTTP endpoint: preflight fails before paid work.
 - Wrong or expired key: the vendor's HTTP error is written to the file error and request diagnostics; authentication failures are not retried.
 - Rate limit or unsupported model: treated as an HTTP/API failure and not blindly retried.
-- Socket/connect reset or timeout: two retries are attempted by default, using exponential delays of 2 and 4 seconds. `--transport-retries` and `--transport-retry-delay-ms` can adjust the bounded policy.
+- Socket/connect reset: two retries are attempted by default, using exponential delays of 2 and 4 seconds. DNS failures use longer adaptive intervals (5/15/30 seconds with three retries and the default base delay). Timeouts receive one same-request retry before the audit chooses a smaller or fallback strategy.
+- HTTP 429 and temporary 500/502/503/504 responses are retried; `Retry-After` is honored up to 60 seconds. Permanent 4xx responses, including invalid credentials or request parameters, fail immediately.
+- DeepSeek streaming uses a 30-second header timeout, 90-second inactivity timeout that resets on every received byte, and a 15-minute audit safety ceiling. All three limits have CLI overrides.
+- A parseable malformed global map is repaired without resending the original source prompt. If no valid AI map can be recovered, deterministic suite/test inventory lets chunk review continue with an explicit report limitation.
 - Repeated standards-chunk transport failure: only that semantic region is subdivided, recovery chunks use non-thinking mode and smaller output limits, and their results are checkpointed.
 - Token limit: the logical pass retries once with the configured larger allowance.
 - Invalid JSON/schema: the logical pass performs the existing correction or targeted-repair path.

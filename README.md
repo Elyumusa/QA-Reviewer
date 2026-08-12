@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.1
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.2
 ```
 
 Then run the installed command from the WebApp root:
@@ -37,7 +37,7 @@ npx qa-review --help
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
 
-To upgrade an earlier GitHub installation to the adaptive transport release, run the same command with `#v0.1.1`; this updates the commit pinned in `package-lock.json`.
+To upgrade an earlier GitHub installation to the resilient streaming release, run the same command with `#v0.1.2`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
@@ -186,8 +186,11 @@ Run `npx qa-review --help` to see the current help text. The options are:
 | `--deterministic-only` | Skip AI and run local deterministic checks | disabled |
 | `--audit-chunk-lines <count>` | Approximate lines per semantic audit evidence chunk; minimum 100 | `700` |
 | `--audit-concurrency <count>` | Number of parallel audit chunk requests; range 1–4 | `2` |
-| `--transport-retries <count>` | Retries for connection reset, socket, and timeout failures; range 0–3 | `2` |
-| `--transport-retry-delay-ms <ms>` | Initial retry delay; later retries use exponential backoff | `2,000` |
+| `--transport-retries <count>` | Retries for recoverable connection, DNS, rate-limit, and server failures; range 0–3 | `2` |
+| `--transport-retry-delay-ms <ms>` | Initial connection retry delay; DNS uses longer adaptive intervals | `2,000` |
+| `--request-timeout-ms <ms>` | Total safety ceiling per provider request | `120,000` focused, `900,000` audit |
+| `--connection-timeout-ms <ms>` | Maximum wait for response headers | `30,000` |
+| `--stream-inactivity-timeout-ms <ms>` | Maximum silence after a streaming response begins | `90,000` |
 | `--no-audit-cache` | Ignore and do not write reusable audit checkpoints | cache enabled |
 | `--max-related-files <count>` | Maximum related context files per test | `5` focused, `8` audit |
 | `--max-context-chars <count>` | Additional diff/context character budget | `50,000` focused, `180,000` audit |
@@ -218,9 +221,9 @@ Audit mode performs a bounded sequence of passes:
 4. Source and coverage cross-check.
 5. Final evidence synthesis and prioritization.
 
-The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, and token usage. DeepSeek uses SSE streaming so long reasoning responses continuously move data over the connection. Transient connection errors receive bounded exponential-backoff retries.
+The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, stream activity, and token usage. DeepSeek uses SSE streaming so long reasoning responses and keep-alives continuously move data over the connection. The client separates connection, stream-inactivity, and total safety timeouts instead of aborting every active stream after one fixed duration.
 
-If a semantic chunk still fails with a transport error, the reviewer splits only that region into smaller overlapping chunks and reviews those recovery chunks with thinking disabled and a smaller output allowance. Completed recovery work is checkpointed under the repository-root `.qa-review-cache/`. If a required pass ultimately fails, the report retains deterministic findings and completed chunk evidence, marks the audit incomplete, and exits `1` instead of returning an empty result. Use `--no-audit-cache` for a clean run.
+Parseable schema-invalid global maps receive a small non-thinking repair containing only the invalid object, validation error, and schema. If the global AI map remains unavailable, a conservative deterministic suite/test map lets standards chunks continue and the report records the fallback as a limitation. If a semantic chunk still fails with a transport error, the reviewer splits only that region into smaller overlapping chunks and reviews those recovery chunks with thinking disabled and a smaller output allowance. Completed recovery work is checkpointed under the repository-root `.qa-review-cache/`. If a required pass ultimately fails, the report retains deterministic findings and completed chunk evidence, marks the audit incomplete, and exits `1` instead of returning an empty result. Use `--no-audit-cache` for a clean run.
 
 ## Troubleshooting
 
@@ -246,7 +249,7 @@ Use a repository-relative path to a `.cy.*` or `.spec.*` Cypress test file. Do n
 
 ### The API rejects the key, model, or endpoint
 
-Confirm that the provider selection matches the key, the model is available to that account, and any endpoint override implements that provider’s API. Authentication and HTTP/API failures are reported and are not blindly retried.
+Confirm that the provider selection matches the key, the model is available to that account, and any endpoint override implements that provider’s API. Permanent client/authentication errors are not retried. Rate limits and temporary 5xx responses receive bounded retries, including `Retry-After` when supplied.
 
 ### A large audit is slow or reaches a token limit
 
@@ -254,7 +257,7 @@ This is expected for a large test. The audit uses semantic chunks, bounded concu
 
 ### `ECONNRESET`, `UND_ERR_SOCKET`, or a request timeout
 
-These mean the provider connection ended before a complete response arrived. DeepSeek streaming, two default retries, exponential backoff, and failed-chunk subdivision are automatic. If the provider remains unstable, try `--audit-concurrency 1`, increase `--transport-retries` up to `3`, or rerun later; completed checkpoints and partial evidence are preserved.
+These mean the provider connection ended before a complete response arrived. DeepSeek streaming, activity-aware timeouts, two default retries, exponential backoff, and failed-chunk subdivision are automatic. DNS failures use longer 5/15/30-second intervals when three retries are selected with the default base delay. If the provider remains unstable, try `--audit-concurrency 1`, increase `--transport-retries` up to `3`, or rerun later; completed checkpoints and partial evidence are preserved.
 
 ## CI usage
 
