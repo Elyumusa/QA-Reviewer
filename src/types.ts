@@ -12,6 +12,13 @@ export type FindingCategory = (typeof findingCategories)[number]
 export type ReviewMode = (typeof reviewModes)[number]
 export type AiProviderId = (typeof aiProviders)[number]
 
+export type RecommendationCodeKind = 'exact' | 'illustrative' | 'unavailable'
+
+export interface OfficialReference {
+  title: string
+  url: string
+}
+
 export interface Finding {
   line: number
   severity: Severity
@@ -30,6 +37,9 @@ export interface Finding {
   standards_references?: string[]
   impact?: string
   related_locations?: number[]
+  official_references?: OfficialReference[]
+  recommendation_code_kind?: RecommendationCodeKind
+  recommendation_assumptions?: string[]
 }
 
 export interface AuditMetrics {

@@ -1,6 +1,6 @@
 {
   "name": "@levelbuild/cypress-quality-reviewer",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Standards-aware focused and multi-pass audit reviewer for Levelbuild WebApp Cypress tests",
   "type": "module",

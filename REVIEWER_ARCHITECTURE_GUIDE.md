@@ -501,6 +501,10 @@ Malformed or truncated model output is retried once with the configured larger o
 
 The model-facing synthesis schema still requests at most 30 findings, but local validation treats that number as a report-usability bound. It validates up to a hard safety maximum of 120 returned findings—including every source line—before selection. Exact rule/title duplicates are merged with their related locations and evidence. Remaining items are ranked by severity, confidence, evidence, recurrence, category, and original order; the strongest 30 are retained. This deterministic boundary guarantees that a model ignoring only `maxItems` cannot discard a completed audit, while malformed overflow items still fail and trigger repair.
 
+After that selection boundary, a recommendation-enrichment stage processes at most ten final findings per non-thinking request. This ordering is deliberate: the expensive evidence assembly and code generation happen only for findings that will appear in the report. Internal standards remain the policy source. `standardsGuidance.ts` parses their level-two sections and accepts only `docs.cypress.io` links already embedded in them. Each batch receives numbered faulty-code windows plus matching helper and related-source windows. `recommendationSchema.ts` rejects unknown finding keys, non-allowlisted standard headings or URLs, malformed TypeScript, invented exact-code literals, and inconsistent `exact`/`illustrative`/`unavailable` classifications.
+
+Recommendation enrichment is an optional quality enhancement rather than a required evidence pass. A failed batch leaves its original synthesized recommendations intact and adds an explicit audit limitation; it does not turn an otherwise completed audit into a partial result.
+
 If the second output is invalid, that file receives an error. The remaining files continue to be reviewed.
 
 ### Step 10: Merge deterministic and AI findings
@@ -584,6 +588,9 @@ Every finding uses the same fields:
 | `message` | Evidence-based explanation of the problem |
 | `suggestion` | Specific recommended improvement |
 | `replacement_code` | Concrete code or `null` when details are unproven |
+| `recommendation_code_kind` | `exact`, `illustrative`, or `unavailable` after audit enrichment |
+| `recommendation_assumptions` | Required adaptation or missing context for non-exact code |
+| `official_references` | Allowlisted official Cypress titles and URLs extracted from the applicable standard |
 | `specific_cypress_methods` | Cypress methods relevant to the fix |
 | `context_used` | Context sources used by the finding |
 | `confidence` | `high`, `medium`, or `low` |
@@ -896,6 +903,14 @@ Encapsulates all Git process calls. It uses `execFile`, not shell string interpo
 
 Maps test types to the two WebApp standards paths, reads project copies when present, falls back to the package’s `standards/` copies when needed, checks that documents are non-empty, and combines both for unknown test types.
 
+### `src/standardsGuidance.ts`
+
+Parses the loaded standards into bounded heading sections, extracts only HTTPS links hosted by `docs.cypress.io`, ranks sections against each selected finding, and assembles numbered test/source evidence windows for recommendation enrichment. It does not fetch the web during a review.
+
+### `src/recommendationSchema.ts`
+
+Defines and validates recommendation batches. It requires one result per requested finding, exact supplied standard headings, allowlisted official URLs, consistent code classification, stated assumptions for non-exact output, syntactically valid TypeScript snippets, and repository support for literals used by exact snippets.
+
 ### `standards/`
 
 Carries the component and E2E standards with the published package so a standalone installation has a stable review baseline even when a checkout is missing one of the WebApp documents.
@@ -1106,7 +1121,7 @@ npm test
 npm run typecheck
 ```
 
-The test suite currently contains 75 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, deterministic global-map fallback, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, keep-alives, missing terminators, activity-aware timeouts, error-specific transport recovery, bounded synthesis normalization, overflow line validation, non-thinking format retries, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/targeted-repair behavior, refusal handling, and API failure behavior.
+The test suite currently contains 84 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, deterministic global-map fallback, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, keep-alives, missing terminators, activity-aware timeouts, error-specific transport recovery, bounded synthesis normalization, overflow line validation, non-thinking format retries, standards parsing, official-reference allowlisting, exact-snippet validation, enriched Markdown rendering, graceful recommendation degradation, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/targeted-repair behavior, refusal handling, and API failure behavior.
 
 Additional verification included:
 

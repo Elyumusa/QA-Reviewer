@@ -9,6 +9,8 @@ import {
 } from './auditSchema.js'
 import type { SourceChunk } from './auditInventory.js'
 import type { AuditInventory, Finding, ReviewContext, TestType } from './types.js'
+import { buildFindingEvidence, officialReferencesForSections, relevantStandardsSections, type StandardsGuidance } from './standardsGuidance.js'
+import { findingKey, recommendationBatchJsonSchema } from './recommendationSchema.js'
 
 export const chunkAuditInstructions = `You are the test-quality evidence analyst in the Levelbuild Cypress audit workflow.
 
@@ -76,6 +78,23 @@ Rules:
 export const synthesisRepairInstructions = `You repair a nearly valid Levelbuild Cypress audit JSON object.
 
 Preserve all supported analysis and evidence. Change only what is required to satisfy the supplied validation error and schema. Do not add new findings, selectors, endpoints, events, or application behavior. Return the complete repaired JSON object and nothing else.`
+
+export const recommendationEnrichmentInstructions = `You are the recommendation engineer for a completed Levelbuild Cypress audit.
+
+For every supplied finding, produce a concrete correction grounded in the exact repository evidence and internal standards.
+
+Rules:
+- Do not rediscover, remove, combine, reprioritize, or change the finding. Improve only its recommendation.
+- Explain what code should change and why that change proves the intended behavior.
+- Prefer an exact TypeScript/Cypress replacement that can be pasted into this test when the supplied evidence proves every selector, alias, endpoint, method, value, and expectation.
+- Use code_kind "exact" only when every repository-specific literal and behavior appears in the supplied evidence. Never invent a selector, alias, endpoint, fixture, event, method, expected value, or component state.
+- Use code_kind "illustrative" only when a useful Cypress pattern can be shown but adaptation is genuinely required; list each required assumption.
+- Use code_kind "unavailable" with replacement_code null only when a responsible snippet cannot be produced from the supplied context; state the missing context in assumptions.
+- Internal standards are the primary policy. Cite only exact supplied section headings.
+- Official Cypress documentation is supporting authority. Cite only URLs in the supplied allowlist and only when the page directly supports this recommendation. Do not claim Cypress recommends a project-specific design.
+- Prefer retryable rendered assertions, request aliases, observable event details, and public behavior where those match the evidence.
+- Return exactly one recommendation for every requested finding_key, in the same order.
+- Return JSON matching the supplied schema and nothing else.`
 
 export const globalMapRepairInstructions = `You repair a nearly valid Levelbuild Cypress global-map JSON object.
 
@@ -236,6 +255,34 @@ export function buildAuditSynthesisRepairInput(
     section('invalid_audit_json', JSON.stringify(invalidValue, null, 2)),
     section('required_json_schema', JSON.stringify(auditSynthesisJsonSchema, null, 2)),
   ].join('\n\n')
+}
+
+export function buildRecommendationEnrichmentInput(options: {
+  findings: Finding[]
+  context: ReviewContext
+  guidance: StandardsGuidance
+  isRetry?: boolean
+}): string {
+  const sections = relevantStandardsSections(options.guidance, options.findings)
+  const officialReferences = officialReferencesForSections(options.guidance, sections)
+  const input = [
+    section('findings_to_enrich', JSON.stringify(options.findings.map(finding => ({
+      finding_key: findingKey(finding),
+      title: finding.title,
+      message: finding.message,
+      impact: finding.impact ?? '',
+      current_recommendation: finding.suggestion,
+      current_replacement_code: finding.replacement_code,
+      cypress_methods: finding.specific_cypress_methods,
+      standards_references: finding.standards_references ?? [],
+    })), null, 2)),
+    section('repository_evidence', options.findings.map(finding => buildFindingEvidence(finding, options.context)).join('\n\n--- NEXT FINDING ---\n\n')),
+    section('applicable_internal_standard_sections', sections.map(item => `## ${item.heading}\n\n${item.content}`).join('\n\n--- STANDARD SECTION ---\n\n')),
+    section('allowed_internal_standard_headings', JSON.stringify(sections.map(item => item.heading), null, 2)),
+    section('allowlisted_official_cypress_references', JSON.stringify(officialReferences, null, 2)),
+    section('required_json_schema', JSON.stringify(recommendationBatchJsonSchema, null, 2)),
+  ].join('\n\n')
+  return options.isRetry ? retry(input) : input
 }
 
 export function buildEvidenceExcerpts(

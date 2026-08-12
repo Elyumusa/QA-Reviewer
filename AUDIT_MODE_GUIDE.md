@@ -36,8 +36,9 @@ flowchart TD
     DN --> E
     E --> F[Pass 5: synthesis and prioritization]
     B --> F
-    F --> G[Runtime validation]
-    G --> H[Detailed JSON and Markdown]
+    F --> G[Pass 6: recommendation enrichment]
+    G --> H[Runtime validation]
+    H --> I[Detailed JSON and Markdown]
 ```
 
 “Agentic” here means the system decomposes the goal, gathers evidence with specialized steps, passes structured results between steps, and synthesizes a final answer. It does not mean the model has unrestricted shell or filesystem access.
@@ -51,7 +52,7 @@ This bounded design was chosen because it is:
 - Observable because every pass has a schema and request count.
 - Provider-agnostic above native DeepSeek, OpenAI, and Anthropic transport adapters.
 
-## 3. The five passes
+## 3. The six passes
 
 ### Pass 1: deterministic inventory
 
@@ -160,6 +161,21 @@ The first synthesis attempt uses thinking at high effort. If it is malformed or 
 
 The prompt explicitly says deterministic findings are seeds, not the scope. This prevents a numeric `cy.wait()` finding from anchoring the entire audit.
 
+### Pass 6: standards-grounded recommendation enrichment
+
+Synthesis decides which findings belong in the final bounded report. A separate non-thinking pass then improves those recommendations in batches of at most ten. Each batch receives only:
+
+- The selected findings; it cannot add, remove, combine, or reprioritize them.
+- Numbered source windows around each faulty line.
+- Matching helpers elsewhere in the test.
+- Matching windows from collected production and related files.
+- The most relevant sections parsed from the applicable Levelbuild standard.
+- Official Cypress documentation links already present in that standard.
+
+The model must classify replacement code as `exact`, `illustrative`, or `unavailable`. Exact code is accepted only when it is syntactically valid TypeScript and its repository-specific string literals are supported by collected code. Official URLs must match the standards-derived allowlist; the model cannot introduce a documentation URL. Illustrative and unavailable recommendations must state the adaptation or missing context.
+
+This pass is useful but not allowed to destroy a completed audit. If one recommendation batch fails after its bounded retry, findings in that batch retain their original validated synthesis recommendations and the failure is recorded in `audit.limitations`. Successful batches remain enriched.
+
 ## 4. Runtime validation and failure behavior
 
 Every AI pass uses the selected provider's JSON facility and is then validated locally. DeepSeek and OpenAI use JSON Object mode; Claude also receives the exact schema through native structured output. Provider output alone is never trusted: the tool checks required fields, enum values, non-empty text, line types, arrays, and evidence locations.
@@ -182,6 +198,7 @@ Truncation uses an adaptive allowance. Format retries use thinking disabled so t
 | Standards chunk | 20,000 | 40,000 | high |
 | Source/coverage | 20,000 | 40,000 | high |
 | Final synthesis | 30,000 | 60,000 | high |
+| Recommendation batch | 12,000 | 20,000 | disabled |
 
 These are generated-output limits, not account credit limits or input-context limits. Truncated or malformed responses receive the larger retry allowance. For a parseable schema failure, progress includes the exact validator message and a targeted repair prompt tells the model what must be corrected.
 
@@ -295,10 +312,10 @@ Smaller chunks usually improve local attention but create more requests. Larger 
 Without retries, an audit uses approximately:
 
 ```text
-1 global map + number of semantic test chunks + 1 coverage pass + 1 synthesis pass
+1 global map + number of semantic test chunks + 1 coverage pass + 1 synthesis pass + ceil(final findings / 10) recommendation passes
 ```
 
-For the current 3,161-line `Address.cy.ts`, the semantic chunker creates six chunks, so a clean uncached audit expects nine logical requests. A model-output retry or targeted repair adds one request for the affected pass. A transient connection failure can add up to the configured transport attempts; adaptive recovery replaces only the failed chunk with smaller evidence requests.
+For a file producing six semantic chunks, a clean uncached audit uses nine logical requests before recommendation enrichment. No findings add no recommendation request; 1–10 findings add one, and the maximum 30-finding report adds three. A model-output retry or targeted repair adds one request for the affected pass. A transient connection failure can add up to the configured transport attempts; adaptive recovery replaces only the failed chunk with smaller evidence requests.
 
 Global-map, semantic-chunk, and coverage results are stored in a content-addressed checkpoint under `.qa-review-cache/`. The key includes the test, standards, related context, model, provider, endpoint, chunk configuration, and explicit audit-pipeline revision. If synthesis fails, rerunning the same command reuses those passes and normally makes only the synthesis request. Source, standards, provider configuration, or pipeline-revision changes automatically produce a new key. A pipeline upgrade intentionally creates a one-time cache miss rather than reusing evidence produced by an incompatible prompt or schema. Use `--no-audit-cache` to bypass checkpoints.
 
@@ -483,6 +500,8 @@ The example is abbreviated: real output includes metrics, metric locations, stan
 | `src/auditCheckpoint.ts` | Creates content-addressed checkpoint keys and atomically saves reusable global, chunk, and coverage results |
 | `src/auditPromptBuilder.ts` | Defines the specialized instructions and structured inputs for chunk, coverage, and synthesis passes |
 | `src/auditSchema.ts` | Defines all three intermediate/final JSON schemas and validates model output at runtime |
+| `src/standardsGuidance.ts` | Parses standard sections and allowlisted Cypress links, selects relevant rules, and builds exact repository evidence windows |
+| `src/recommendationSchema.ts` | Validates batched recommendation output, code classification, TypeScript syntax, repository literals, and official references |
 | `src/deepSeekClient.ts` | Provides authenticated JSON requests, adaptive truncation retries, requested/returned model telemetry, token usage, timings, progress, and request traces |
 | `src/deepSeekConfig.ts` | Validates the key, model, and endpoint before any audit request |
 | `src/deepSeekAuditReviewer.ts` | Orchestrates the pass graph, bounded concurrency, adaptive failed-chunk recovery, partial evidence preservation, line validation, synthesis, and execution metadata |

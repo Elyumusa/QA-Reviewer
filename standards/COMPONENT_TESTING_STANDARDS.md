@@ -78,6 +78,8 @@ expect(component.toImage(viewportPoint)).to.deep.equal(imagePoint)
 
 ## 4. Keep Tests Independent
 
+Official Cypress basis: [Test isolation](https://docs.cypress.io/app/core-concepts/test-isolation).
+
 Each test must pass when run alone, in a different order, or with the rest of the suite.
 
 ### Rules
@@ -96,6 +98,8 @@ Cypress component testing unmounts the component between tests, but code that mo
 ---
 
 ## 5. Synchronize With Real Conditions
+
+Official Cypress basis: [Retry-ability](https://docs.cypress.io/app/core-concepts/retry-ability), [best practices for unnecessary waiting](https://docs.cypress.io/app/core-concepts/best-practices#Unnecessary-Waiting), and [`cy.wait()`](https://docs.cypress.io/api/commands/wait).
 
 Do not use fixed delays to wait for a component.
 
@@ -124,6 +128,8 @@ function getReadyCanvas(): Cypress.Chainable<ImageCanvas> {
 ---
 
 ## 6. Use Stable Selectors and Shadow DOM Queries
+
+Official Cypress basis: [selecting elements](https://docs.cypress.io/app/core-concepts/best-practices#Selecting-Elements), [shadow DOM queries](https://docs.cypress.io/api/commands/shadow), and [actionability](https://docs.cypress.io/app/core-concepts/interacting-with-elements).
 
 ### Selector order
 
@@ -172,6 +178,8 @@ Use strong types for normal component access. A justified test-only boundary cas
 ---
 
 ## 8. Stub Boundaries, Not the Behavior Under Test
+
+Official Cypress basis: [`cy.intercept()`](https://docs.cypress.io/api/commands/intercept), [`cy.stub()`](https://docs.cypress.io/api/commands/stub), and [`cy.spy()`](https://docs.cypress.io/api/commands/spy).
 
 Mocks and stubs should control external or unstable boundaries without replacing the logic the test claims to verify.
 
@@ -283,6 +291,8 @@ AI agents must not add empty tests, self-fulfilling assertions, or broad mocks t
 
 - [Cypress component testing](https://docs.cypress.io/app/component-testing/get-started)
 - [Cypress best practices](https://docs.cypress.io/app/core-concepts/best-practices)
+- [Cypress conditional testing](https://docs.cypress.io/app/guides/conditional-testing)
+- [Cypress retry-ability](https://docs.cypress.io/app/core-concepts/retry-ability)
 - [Cypress test isolation](https://docs.cypress.io/app/core-concepts/test-isolation)
 - [Cypress shadow DOM command](https://docs.cypress.io/api/commands/shadow)
 - [Cypress wait command](https://docs.cypress.io/api/commands/wait)

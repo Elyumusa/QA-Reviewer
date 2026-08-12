@@ -45,6 +45,8 @@ When testing a Boolean value in a data grid, the API payload sends `true` or `fa
 
 ## 1. Test Isolation & Data Ownership
 
+Official Cypress basis: [Test isolation](https://docs.cypress.io/app/core-concepts/test-isolation).
+
 ### The Golden Rule
 
 > **Each test that mutates data must exclusively own the records it mutates. Shared records must be read-only.**
@@ -195,6 +197,8 @@ cy.createRecord('@dataSource', {
 
 ## 4. Cypress Aliases
 
+Official Cypress basis: [Variables and aliases](https://docs.cypress.io/app/core-concepts/variables-and-aliases).
+
 ### Core Rules
 
 - **Always use aliases** (`.as('name')`) to store and reuse references to records, UI elements, and data
@@ -228,6 +232,8 @@ describe('My Suite', () => {
 ---
 
 ## 5. Selectors & Querying
+
+Official Cypress basis: [Selecting elements](https://docs.cypress.io/app/core-concepts/best-practices#Selecting-Elements).
 
 ### Priority Order (Most Preferred → Least Preferred)
 
@@ -276,6 +282,8 @@ cy.get('lvl-table').shadow().find('lvl-table-row')
 ---
 
 ## 6. Shadow DOM Navigation
+
+Official Cypress basis: [Shadow DOM queries](https://docs.cypress.io/api/commands/shadow) and [actionability](https://docs.cypress.io/app/core-concepts/interacting-with-elements).
 
 ### The `lvl-*` Component Pattern
 
@@ -374,6 +382,8 @@ cy.get('@parentRow').shadow().find('.row__children lvl-table-row', { timeout: 10
 ---
 
 ## 8. Handling Async State & Conditional UI
+
+Official Cypress basis: [Conditional testing](https://docs.cypress.io/app/guides/conditional-testing), [retry-ability](https://docs.cypress.io/app/core-concepts/retry-ability), and [unnecessary waiting](https://docs.cypress.io/app/core-concepts/best-practices#Unnecessary-Waiting).
 
 ### ❌ Anti-Pattern: Conditional DOM check inside `.then()`
 

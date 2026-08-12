@@ -159,7 +159,20 @@ export function markdownReport(report: ReviewReport): string {
         if (finding.impact) lines.push('', `Impact: ${finding.impact}`)
         if (finding.evidence?.length) lines.push('', ...finding.evidence.map(evidence => `- Evidence: ${evidence}`))
         lines.push('', `Recommendation: ${finding.suggestion}`)
+        if (finding.recommendation_code_kind) {
+          lines.push('', `Recommendation code: ${finding.recommendation_code_kind}`)
+        }
         if (finding.replacement_code) lines.push('', '```ts', finding.replacement_code, '```')
+        if (finding.recommendation_assumptions?.length) {
+          lines.push('', 'Assumptions/adaptation required:', ...finding.recommendation_assumptions.map(assumption => `- ${assumption}`))
+        }
+        if (finding.official_references?.length) {
+          lines.push(
+            '',
+            'Official Cypress guidance:',
+            ...finding.official_references.map(reference => `- [${reference.title}](${reference.url})`),
+          )
+        }
       }
 
       lines.push(

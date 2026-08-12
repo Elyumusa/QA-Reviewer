@@ -427,3 +427,144 @@ test('reuses checkpointed global, chunk, and coverage passes after a synthesis r
     'source and coverage cross-check',
   ])
 })
+
+test('enriches a synthesized finding with exact repository code and allowlisted Cypress guidance', async () => {
+  const content = [
+    "describe('chatbot', () => {",
+    "  it('uses fallback title', () => {",
+    "    cy.intercept('GET', '/Api/Chatbot/UserInfo', { statusCode: 500 }).as('getUserInfoError')",
+    '    cy.mount(`<lvl-chatbot></lvl-chatbot>`)',
+    "    cy.wait('@getUserInfoError')",
+    "    cy.get('@chatbot').then($el => {",
+    '      const chatbot = $el[0] as any',
+    '      if (!chatbot.displayTitle) chatbot.loadUserInfo()',
+    "      expect(chatbot.displayTitle).to.include('User')",
+    '    })',
+    '  })',
+    '})',
+  ].join('\n')
+  const standardsHeading = '8. Handling Async State & Conditional UI'
+  const officialUrl = 'https://docs.cypress.io/app/guides/conditional-testing'
+  const context: ReviewContext = {
+    test_file: { path: 'Chatbot.cy.ts', content },
+    diff: '',
+    related_files: [{
+      path: 'Chatbot.ts',
+      reason: 'Imported component',
+      content: "render() { return html`<div class='chat-title-text'>${this.displayTitle}</div>` }",
+      truncated: false,
+    }],
+  }
+  const systems: string[] = []
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }>; thinking: { type: string } }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      systems.push(system)
+      if (system.includes('global test-structure analyst')) return response({
+        summary: 'One chatbot suite.', suites: [{ name: 'chatbot', start_line: 1, end_line: 12, purpose: 'Fallback title', key_behaviors: ['uses fallback title'] }],
+        shared_infrastructure: [], cross_suite_patterns: [], context_used: ['Chatbot.cy.ts'], limitations: [],
+      })
+      if (system.includes('test-quality evidence analyst')) return response({
+        chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Conditional fallback assertion.', strengths: [], concerns: [{
+          line: 6, end_line: 10, title: 'Test repairs missing fallback state', description: 'The test conditionally calls loadUserInfo.',
+          impact: 'A broken mount lifecycle can still pass.', recommendation: 'Assert the rendered fallback unconditionally.',
+          standards_references: [standardsHeading], confidence: 'high',
+        }], context_used: ['Chatbot.cy.ts'],
+      })
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'Fallback is weakly covered.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [],
+        context_used: ['Chatbot.ts', 'Chatbot.cy.ts'], limitations: [],
+      })
+      if (system.includes('recommendation engineer')) {
+        assert.equal(body.thinking.type, 'disabled')
+        assert.match(user, /chat-title-text/)
+        assert.match(user, /allowed_internal_standard_headings/)
+        assert.match(user, /docs\.cypress\.io\/app\/guides\/conditional-testing/)
+        return response({ recommendations: [{
+          finding_key: 'CYPRESS-CONDITIONAL-001:6',
+          recommendation: 'Remove the conditional production-method call and assert the rendered fallback title after the existing failed request completes.',
+          replacement_code: "cy.wait('@getUserInfoError')\n    .its('response.statusCode')\n    .should('eq', 500)\n\ncy.get('@chatbot')\n    .shadow()\n    .find('.chat-title-text')\n    .should('contain.text', 'User')",
+          code_kind: 'exact',
+          internal_standard_references: [standardsHeading],
+          official_reference_urls: [officialUrl],
+          assumptions: [],
+        }] })
+      }
+      return response({
+        overall_assessment: 'Fallback coverage is undermined by conditional repair.', summary: 'Replace conditional repair with an observable assertion.', strengths: [],
+        findings: [{
+          line: 6, end_line: 10, severity: 'medium', rule: 'CYPRESS-CONDITIONAL-001', category: 'quality',
+          title: 'Test repairs missing fallback state', message: 'The test conditionally calls loadUserInfo when mounting did not set the title.',
+          impact: 'A lifecycle regression can pass.', suggestion: 'Assert the rendered fallback unconditionally.', replacement_code: null,
+          specific_cypress_methods: ['cy.get', 'then', 'should'], context_used: ['Chatbot.cy.ts', 'Chatbot.ts'], confidence: 'high',
+          evidence: ['Lines 6-10 conditionally call the production method.'], standards_references: [standardsHeading], related_locations: [],
+        }], standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [{
+          rank: 1, action: 'Replace conditional repair.', rationale: 'It can hide regressions.', related_finding_rules: ['CYPRESS-CONDITIONAL-001'],
+        }], limitations: [], context_actually_used: ['Chatbot.cy.ts', 'Chatbot.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', `## ${standardsHeading}\n\nDo not repair lifecycle behavior inside a test. [Conditional testing](${officialUrl})`, context, [])
+  const enriched = result.findings[0]!
+  assert.equal(result.audit.execution.complete, true)
+  assert.equal(result.audit.execution.ai_calls, 5)
+  assert.ok(result.audit.execution.passes.includes('standards-grounded recommendation enrichment'))
+  assert.equal(enriched.recommendation_code_kind, 'exact')
+  assert.match(enriched.replacement_code ?? '', /chat-title-text/)
+  assert.deepEqual(enriched.official_references, [{ title: 'Conditional testing', url: officialUrl }])
+  assert.deepEqual(enriched.standards_references, [standardsHeading])
+  assert.equal(systems.filter(system => system.includes('recommendation engineer')).length, 1)
+})
+
+test('preserves a completed audit when optional recommendation enrichment fails', async () => {
+  const context: ReviewContext = {
+    test_file: { path: 'FallbackRecommendation.cy.ts', content: "describe('x', () => {\n  it('renders', () => cy.get('x-demo').should('exist'))\n})" },
+    diff: '', related_files: [],
+  }
+  const progress: string[] = []
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    onProgress: message => progress.push(message),
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      if (system.includes('global test-structure analyst')) return response({
+        summary: 'One suite.', suites: [{ name: 'x', start_line: 1, end_line: 3, purpose: 'Render', key_behaviors: ['renders'] }],
+        shared_infrastructure: [], cross_suite_patterns: [], context_used: ['FallbackRecommendation.cy.ts'], limitations: [],
+      })
+      if (system.includes('test-quality evidence analyst')) return response({
+        chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Weak assertion.', strengths: [], concerns: [], context_used: ['FallbackRecommendation.cy.ts'],
+      })
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'No source.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [], context_used: [], limitations: [],
+      })
+      if (system.includes('recommendation engineer')) return response('not-an-object')
+      return response({
+        overall_assessment: 'The assertion is shallow.', summary: 'Strengthen the rendered assertion.', strengths: [], findings: [{
+          line: 2, end_line: 2, severity: 'low', rule: 'ASSERT-001', category: 'quality', title: 'Shallow existence assertion',
+          message: 'Existence alone does not prove content.', impact: 'A blank component can pass.', suggestion: 'Assert meaningful rendered content.',
+          replacement_code: null, specific_cypress_methods: ['cy.get', 'should'], context_used: ['FallbackRecommendation.cy.ts'], confidence: 'medium',
+          evidence: ['Line 2 asserts only existence.'], standards_references: ['Assertions'], related_locations: [],
+        }], standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [], limitations: [], context_actually_used: ['FallbackRecommendation.cy.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit(
+    'component',
+    '## Assertions\n\nAssert meaningful output. [Retry-ability](https://docs.cypress.io/app/core-concepts/retry-ability)',
+    context,
+    [],
+  )
+  assert.equal(result.audit.execution.complete, true)
+  assert.equal(result.incomplete_error, undefined)
+  assert.equal(result.findings[0]?.suggestion, 'Assert meaningful rendered content.')
+  assert.ok(result.audit.limitations.some(limitation => limitation.includes('Recommendation enrichment batch 1/1 failed')))
+  assert.ok(progress.some(message => message.includes('original validated recommendations were preserved')))
+  assert.ok(!result.audit.execution.passes.includes('standards-grounded recommendation enrichment'))
+})

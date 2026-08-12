@@ -8,10 +8,12 @@ import {
   buildEvidenceExcerpts,
   buildGlobalAuditMapInput,
   buildGlobalAuditMapRepairInput,
+  buildRecommendationEnrichmentInput,
   chunkAuditInstructions,
   coverageAuditInstructions,
   globalAuditMapInstructions,
   globalMapRepairInstructions,
+  recommendationEnrichmentInstructions,
   synthesisAuditInstructions,
   synthesisRepairInstructions,
 } from './auditPromptBuilder.js'
@@ -29,6 +31,8 @@ import {
   type CoverageAuditResult,
   type GlobalAuditMapResult,
 } from './auditSchema.js'
+import { findingKey, recommendationBatchJsonSchema, validateRecommendationBatch } from './recommendationSchema.js'
+import { buildFindingEvidence, officialReferencesForSections, parseStandardsGuidance, relevantStandardsSections } from './standardsGuidance.js'
 import { AiApiError, AiJsonClient, AiTransportError } from './aiJsonClient.js'
 import { DeepSeekJsonClient, type DeepSeekClientOptions } from './deepSeekClient.js'
 import { QualityReviewerError, errorMessage } from './errors.js'
@@ -76,6 +80,12 @@ async function mapConcurrent<T, R>(items: T[], concurrency: number, worker: (ite
   await Promise.all(runners)
   if (firstFailure !== undefined) throw firstFailure
   return results
+}
+
+function batches<T>(items: T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size))
+  return result
 }
 
 function validateTestLines(result: AuditSynthesisResult, lineCount: number): AuditSynthesisResult {
@@ -473,6 +483,66 @@ export class AiAuditReviewer {
       },
     })
 
+    const guidance = parseStandardsGuidance(standards)
+    const officialReferencesByUrl = new Map(guidance.officialReferences.map(reference => [reference.url, reference]))
+    const enrichedFindings = new Map<string, Finding>()
+    const recommendationLimitations: string[] = []
+    let enrichedBatchCount = 0
+    const findingBatches = batches(synthesis.findings, 10)
+
+    for (let batchIndex = 0; batchIndex < findingBatches.length; batchIndex += 1) {
+      const findingBatch = findingBatches[batchIndex]!
+      const relevantSections = relevantStandardsSections(guidance, findingBatch)
+      const relevantOfficialReferences = officialReferencesForSections(guidance, relevantSections)
+      const allowedStandardHeadings = new Set(relevantSections.map(section => section.heading))
+      const suppliedRepositoryEvidence = findingBatch.map(finding => buildFindingEvidence(finding, context)).join('\n')
+      try {
+        this.onProgress(
+          `Enriching recommendations ${batchIndex * 10 + 1}-${batchIndex * 10 + findingBatch.length} of ${synthesis.findings.length} with repository-specific code and standards references.`,
+        )
+        const result = await this.client.requestJson({
+          operation: `audit recommendation enrichment batch ${batchIndex + 1}/${findingBatches.length}`,
+          system: recommendationEnrichmentInstructions,
+          input: buildRecommendationEnrichmentInput({ findings: findingBatch, context, guidance }),
+          retryInput: buildRecommendationEnrichmentInput({ findings: findingBatch, context, guidance, isRetry: true }),
+          validate: value => validateRecommendationBatch(value, {
+            findings: findingBatch,
+            allowedOfficialUrls: new Set(relevantOfficialReferences.map(reference => reference.url)),
+            allowedStandardHeadings,
+            repositoryText: suppliedRepositoryEvidence,
+          }),
+          maxTokens: 12_000,
+          maxRetryTokens: 20_000,
+          reasoningEffort: 'high',
+          thinking: 'disabled',
+          retryThinking: 'disabled',
+          jsonSchema: recommendationBatchJsonSchema,
+          schemaName: 'audit_recommendations',
+        })
+        for (const recommendation of result.recommendations) {
+          const original = findingBatch.find(finding => findingKey(finding) === recommendation.finding_key)!
+          enrichedFindings.set(recommendation.finding_key, {
+            ...original,
+            suggestion: recommendation.recommendation,
+            replacement_code: recommendation.replacement_code,
+            standards_references: recommendation.internal_standard_references,
+            official_references: recommendation.official_reference_urls
+              .map(url => officialReferencesByUrl.get(url))
+              .filter((reference): reference is NonNullable<typeof reference> => reference !== undefined),
+            recommendation_code_kind: recommendation.code_kind,
+            recommendation_assumptions: recommendation.assumptions,
+          })
+        }
+        enrichedBatchCount += 1
+      } catch (error) {
+        const limitation = `Recommendation enrichment batch ${batchIndex + 1}/${findingBatches.length} failed; its original validated recommendations were preserved. ${errorMessage(error)}`
+        recommendationLimitations.push(limitation)
+        this.onProgress(limitation)
+      }
+    }
+
+    const finalFindings = synthesis.findings.map(finding => enrichedFindings.get(findingKey(finding)) ?? finding)
+
     const requestTraces = this.client.traces.slice(tracesAtStart)
     const responseModels = [...new Set(requestTraces
       .map(trace => trace.response_model)
@@ -480,7 +550,7 @@ export class AiAuditReviewer {
 
     return {
       summary: synthesis.summary,
-      findings: synthesis.findings,
+      findings: finalFindings,
       audit: {
         overall_assessment: synthesis.overall_assessment,
         metrics: inventory.metrics,
@@ -490,7 +560,12 @@ export class AiAuditReviewer {
         coverage_gaps: synthesis.coverage_gaps,
         test_placement_issues: synthesis.test_placement_issues,
         priorities: [...synthesis.priorities].sort((left, right) => left.rank - right.rank),
-        limitations: [...new Set([...globalMap.limitations, ...coverageResult.limitations, ...synthesis.limitations])],
+        limitations: [...new Set([
+          ...globalMap.limitations,
+          ...coverageResult.limitations,
+          ...synthesis.limitations,
+          ...recommendationLimitations,
+        ])],
         context_actually_used: [...new Set(synthesis.context_actually_used)],
         execution: {
           complete: true,
@@ -512,6 +587,7 @@ export class AiAuditReviewer {
             'standards review by test chunk',
             'source and coverage cross-check',
             'evidence synthesis and prioritization',
+            ...(enrichedBatchCount > 0 ? ['standards-grounded recommendation enrichment'] : []),
           ],
         },
       },

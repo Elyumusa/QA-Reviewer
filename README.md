@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.3
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.4
 ```
 
 Then run the installed command from the WebApp root:
@@ -37,7 +37,7 @@ npx qa-review --help
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
 
-To upgrade an earlier GitHub installation to the bounded-synthesis release, run the same command with `#v0.1.3`; this updates the commit pinned in `package-lock.json`.
+To upgrade an earlier GitHub installation to the standards-grounded recommendation release, run the same command with `#v0.1.4`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
@@ -220,12 +220,35 @@ Audit mode performs a bounded sequence of passes:
 3. Standards review over semantic test chunks.
 4. Source and coverage cross-check.
 5. Final evidence synthesis and prioritization.
+6. Batched recommendation enrichment for the final findings, using exact repository windows, relevant internal-standard sections, and only official Cypress links already allowlisted by those standards.
 
 The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, stream activity, and token usage. DeepSeek uses SSE streaming so long reasoning responses and keep-alives continuously move data over the connection. The client separates connection, stream-inactivity, and total safety timeouts instead of aborting every active stream after one fixed duration.
 
 Parseable schema-invalid global maps receive a small non-thinking repair containing only the invalid object, validation error, and schema. If the global AI map remains unavailable, a conservative deterministic suite/test map lets standards chunks continue and the report records the fallback as a limitation. If a semantic chunk still fails with a transport error, the reviewer splits only that region into smaller overlapping chunks and reviews those recovery chunks with thinking disabled and a smaller output allowance. Completed recovery work is checkpointed under the repository-root `.qa-review-cache/`. If a required pass ultimately fails, the report retains deterministic findings and completed chunk evidence, marks the audit incomplete, and exits `1` instead of returning an empty result. Use `--no-audit-cache` for a clean run.
 
 The final audit report is bounded to 30 synthesized findings so it remains usable. If a provider returns more, the reviewer validates every item and every source line first, merges exact rule/title repeats, and retains the strongest 30 using severity, confidence, evidence, and recurrence. The report records the original and retained counts in its limitations. A presentation-count overflow therefore does not turn an otherwise complete audit into an error.
+
+After synthesis, audit mode improves recommendations in batches of at most ten findings. Internal standards remain the policy source; official Cypress pages linked by those standards are supporting authority. Each recommendation receives the exact faulty code window, matching test helpers, and matching related-source windows. Returned snippets are labelled `exact`, `illustrative`, or `unavailable`. Exact snippets are checked for valid TypeScript and for repository-specific selectors, aliases, endpoints, and expected strings before they are accepted. A provider failure in this optional enrichment stage preserves the completed audit's original validated recommendation and records a limitation instead of discarding the audit.
+
+An enriched Markdown finding resembles:
+
+```text
+Recommendation: Remove the conditional production-method call and assert the rendered fallback title after the existing failed request completes.
+Recommendation code: exact
+```
+
+```ts
+cy.wait('@getUserInfoError')
+    .its('response.statusCode')
+    .should('eq', 500)
+
+cy.get('@chatbot')
+    .shadow()
+    .find('.chat-title-text')
+    .should('contain.text', 'User')
+```
+
+The report then lists the applicable internal-standard heading and clickable allowlisted Cypress guidance. The reviewer never browses documentation during an audit.
 
 ## Troubleshooting
 
