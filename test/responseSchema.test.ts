@@ -107,3 +107,66 @@ test('recovers empty audit finding prose fields without discarding valid evidenc
   assert.equal(result.findings[0]?.impact, 'The selector depends on DOM ordering.')
   assert.match(result.findings[0]?.suggestion ?? '', /Positional selector/)
 })
+
+function auditFindingAt(index: number, severity: 'critical' | 'high' | 'medium' | 'low' | 'info' = 'low') {
+  return {
+    line: index + 1,
+    end_line: index + 1,
+    severity,
+    rule: `AUDIT-BOUND-${index + 1}`,
+    category: 'quality',
+    title: `Bounded finding ${index + 1}`,
+    message: `Supported issue ${index + 1}.`,
+    impact: 'The test can provide weaker confidence.',
+    suggestion: 'Strengthen the observable assertion.',
+    replacement_code: null,
+    specific_cypress_methods: [],
+    context_used: ['test file'],
+    confidence: index % 2 === 0 ? 'high' : 'medium',
+    evidence: [`Evidence at line ${index + 1}.`],
+    standards_references: ['Observable behavior'],
+    related_locations: [],
+  }
+}
+
+function synthesisWithFindings(findings: unknown[]) {
+  return {
+    overall_assessment: 'Large audit.',
+    summary: 'Many supported issues.',
+    strengths: [],
+    findings,
+    standards_assessment: [],
+    coverage_gaps: [],
+    test_placement_issues: [],
+    priorities: [{ rank: 1, action: 'Prioritize important findings.', rationale: 'Risk based.', related_finding_rules: ['AUDIT-BOUND-68', 'AUDIT-BOUND-67'] }],
+    limitations: [],
+    context_actually_used: ['test file'],
+  }
+}
+
+test('validates every over-limit finding and retains the strongest bounded set', () => {
+  const findings = Array.from({ length: 68 }, (_, index) => auditFindingAt(index, index === 67 ? 'critical' : 'low'))
+  const result = validateAuditSynthesis(synthesisWithFindings(findings))
+
+  assert.equal(result.findings.length, 30)
+  assert.ok(result.findings.some(finding => finding.rule === 'AUDIT-BOUND-68'))
+  assert.ok(!result.findings.some(finding => finding.rule === 'AUDIT-BOUND-67'))
+  assert.deepEqual(result.priorities[0]?.related_finding_rules, ['AUDIT-BOUND-68'])
+  assert.ok(result.limitations.some(limitation => limitation.includes('returned 68 valid finding item(s)')))
+  assert.ok(result.limitations.some(limitation => limitation.includes('retained the 30 highest-priority')))
+})
+
+test('does not hide an invalid finding merely because it is beyond the report limit', () => {
+  const findings: unknown[] = Array.from({ length: 35 }, (_, index) => auditFindingAt(index))
+  findings[34] = { ...auditFindingAt(34), line: 'invalid' }
+  assert.throws(() => validateAuditSynthesis(synthesisWithFindings(findings)), /audit finding 34 has invalid lines/)
+})
+
+test('checks source-line bounds before omitting lower-priority overflow findings', () => {
+  const findings: unknown[] = Array.from({ length: 35 }, (_, index) => auditFindingAt(index))
+  findings[34] = { ...auditFindingAt(34), line: 999, end_line: 999 }
+  assert.throws(
+    () => validateAuditSynthesis(synthesisWithFindings(findings), { lineCount: 100 }),
+    /AUDIT-BOUND-35 has a line outside 1-100/,
+  )
+})

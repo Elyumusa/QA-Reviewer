@@ -173,7 +173,9 @@ Additional audit checks ensure:
 
 Malformed or truncated output is retried once for that pass. Parseable schema-invalid synthesis and global-map output uses a smaller targeted repair instead of repeating the full prompt. DeepSeek uses SSE streaming. Recoverable fetch/socket/connect, DNS, rate-limit, and server failures receive bounded error-specific retry timing; permanent 4xx responses are not retried. If the AI global map remains unavailable, the reviewer continues with a deterministic suite/test map and records that limitation. If a standards chunk still fails, only that chunk is adaptively split and retried without thinking. If a later required pass still cannot complete, the file receives `status: "error"`, but deterministic findings and completed AI evidence remain in the report.
 
-Truncation uses an adaptive allowance:
+Cardinality limits are presentation bounds rather than correctness conditions. When final synthesis returns more than 30 structurally valid findings, local normalization validates all items and global line references, consolidates exact rule/title duplicates, merges their related evidence, and selects the highest-priority 30 by severity, confidence, evidence, and recurrence. Priorities are stripped of references to omitted rule IDs, and an audit limitation records the returned and retained counts. More than 120 raw finding items remains a schema/safety failure and uses the normal repair path.
+
+Truncation uses an adaptive allowance. Format retries use thinking disabled so their output budget is spent on complete JSON rather than repeating the first pass's reasoning:
 
 | Pass | First attempt | Truncation retry | Reasoning effort |
 |---|---:|---:|---|

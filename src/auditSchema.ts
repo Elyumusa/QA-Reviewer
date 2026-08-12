@@ -84,6 +84,16 @@ export interface AuditSynthesisResult {
   context_actually_used: string[]
 }
 
+const synthesisLimits = {
+  strengths: 12,
+  findings: 30,
+  coverageGaps: 20,
+  placementIssues: 15,
+  priorities: 12,
+} as const
+
+const synthesisHardLimitMultiplier = 4
+
 const stringArraySchema = { type: 'array', items: { type: 'string' } } as const
 const confidenceSchema = { type: 'string', enum: [...confidences] } as const
 
@@ -523,13 +533,118 @@ function auditFinding(value: unknown, index: number): Finding {
   }
 }
 
-export function validateAuditSynthesis(value: unknown): AuditSynthesisResult {
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)]
+}
+
+function findingScore(finding: Finding, originalIndex: number): number {
+  const severityScore: Record<Severity, number> = {
+    critical: 500,
+    high: 400,
+    medium: 300,
+    low: 200,
+    info: 100,
+  }
+  const confidenceScore: Record<Confidence, number> = { high: 30, medium: 20, low: 10 }
+  return severityScore[finding.severity]
+    + confidenceScore[finding.confidence]
+    + (finding.category === 'quality' ? 10 : 0)
+    + Math.min(finding.related_locations?.length ?? 0, 10)
+    + Math.min(finding.evidence?.length ?? 0, 5)
+    + Math.min(finding.standards_references?.length ?? 0, 5)
+    - originalIndex / 10_000
+}
+
+function consolidateAndSelectFindings(findings: Finding[], maximum: number): Finding[] {
+  const consolidated = new Map<string, { finding: Finding; originalIndex: number }>()
+  findings.forEach((finding, originalIndex) => {
+    const key = `${finding.rule.trim().toLowerCase()}:${finding.title.trim().toLowerCase()}`
+    const existing = consolidated.get(key)
+    if (!existing) {
+      consolidated.set(key, { finding, originalIndex })
+      return
+    }
+    const primary = findingScore(finding, originalIndex) > findingScore(existing.finding, existing.originalIndex)
+      ? finding
+      : existing.finding
+    const secondary = primary === finding ? existing.finding : finding
+    consolidated.set(key, {
+      finding: {
+        ...primary,
+        related_locations: [...new Set([
+          ...(primary.related_locations ?? []),
+          secondary.line,
+          ...(secondary.related_locations ?? []),
+        ])].filter(line => line !== primary.line).sort((left, right) => left - right),
+        evidence: uniqueStrings([...(primary.evidence ?? []), ...(secondary.evidence ?? [])]),
+        standards_references: uniqueStrings([...(primary.standards_references ?? []), ...(secondary.standards_references ?? [])]),
+        specific_cypress_methods: uniqueStrings([...primary.specific_cypress_methods, ...secondary.specific_cypress_methods]),
+        context_used: uniqueStrings([...primary.context_used, ...secondary.context_used]),
+      },
+      originalIndex: Math.min(originalIndex, existing.originalIndex),
+    })
+  })
+  return [...consolidated.values()]
+    .sort((left, right) => findingScore(right.finding, right.originalIndex) - findingScore(left.finding, left.originalIndex))
+    .slice(0, maximum)
+    .map(entry => entry.finding)
+}
+
+export function validateAuditSynthesis(value: unknown, options: { lineCount?: number } = {}): AuditSynthesisResult {
   const result = object(value, 'Audit synthesis')
+  const normalizationNotes: string[] = []
+  const rawStrengths = array(result.strengths, 'strengths', synthesisLimits.strengths * synthesisHardLimitMultiplier)
+  const rawFindings = array(result.findings, 'findings', synthesisLimits.findings * synthesisHardLimitMultiplier)
+  const rawCoverageGaps = array(result.coverage_gaps, 'coverage_gaps', synthesisLimits.coverageGaps * synthesisHardLimitMultiplier)
+  const rawPlacementIssues = array(result.test_placement_issues, 'test_placement_issues', synthesisLimits.placementIssues * synthesisHardLimitMultiplier)
+  const rawPriorities = array(result.priorities, 'priorities', synthesisLimits.priorities * synthesisHardLimitMultiplier)
+  const parsedStrengths = rawStrengths.map((item, index) => strength(item, `strength ${index}`))
+  const parsedFindings = rawFindings.map(auditFinding)
+  const parsedCoverageGaps = rawCoverageGaps.map((item, index) => coverageGap(item, `coverage gap ${index}`))
+  const parsedPlacementIssues = rawPlacementIssues.map((item, index) => placementIssue(item, `placement issue ${index}`))
+  if (options.lineCount !== undefined) {
+    const valid = (line: number): boolean => line >= 1 && line <= options.lineCount!
+    for (const item of parsedStrengths) {
+      if (!item.evidence_lines.every(valid)) throw new QualityReviewerError(`Audit strength has a line outside 1-${options.lineCount}`)
+    }
+    for (const item of parsedFindings) {
+      if (!valid(item.line) || !valid(item.end_line ?? item.line) || !(item.related_locations ?? []).every(valid)) {
+        throw new QualityReviewerError(`Audit finding ${item.rule} has a line outside 1-${options.lineCount}`)
+      }
+    }
+    for (const item of parsedPlacementIssues) {
+      if (!valid(item.line)) throw new QualityReviewerError(`Audit placement issue has a line outside 1-${options.lineCount}`)
+    }
+  }
+  const findings = consolidateAndSelectFindings(parsedFindings, synthesisLimits.findings)
+  if (rawFindings.length > synthesisLimits.findings || findings.length < parsedFindings.length) {
+    normalizationNotes.push(
+      `Final synthesis returned ${rawFindings.length} valid finding item(s); deterministic consolidation retained the ${findings.length} highest-priority distinct finding(s) using severity, confidence, evidence, and recurrence, with ${rawFindings.length - findings.length} redundant or lower-priority item(s) merged or omitted.`,
+    )
+  }
+  const section = <T>(items: T[], maximum: number, label: string): T[] => {
+    if (items.length > maximum) {
+      normalizationNotes.push(`Final synthesis returned ${items.length} ${label}; the first ${maximum} were retained to keep the report bounded.`)
+    }
+    return items.slice(0, maximum)
+  }
+  const parsedPriorities = rawPriorities.map((value, index): AuditPriority => {
+    const item = object(value, `priority ${index}`)
+    if (!Number.isInteger(item.rank) || (item.rank as number) < 1) throw new QualityReviewerError(`priority ${index}.rank is invalid`)
+    return {
+      rank: item.rank as number,
+      action: text(item.action, `priority ${index}.action`),
+      rationale: text(item.rationale, `priority ${index}.rationale`),
+      related_finding_rules: strings(item.related_finding_rules, `priority ${index}.related_finding_rules`),
+    }
+  })
+  const priorities = section(parsedPriorities, synthesisLimits.priorities, 'priorities')
+  const retainedRules = new Set(findings.map(finding => finding.rule))
   return {
     overall_assessment: text(result.overall_assessment, 'overall_assessment'),
     summary: text(result.summary, 'summary'),
-    strengths: array(result.strengths, 'strengths', 12).map((item, index) => strength(item, `strength ${index}`)),
-    findings: array(result.findings, 'findings', 30).map(auditFinding),
+    strengths: section(parsedStrengths, synthesisLimits.strengths, 'strengths'),
+    findings,
     standards_assessment: array(result.standards_assessment, 'standards_assessment').map((value, index) => {
       const item = object(value, `standards assessment ${index}`)
       if (item.assessment !== 'strong' && item.assessment !== 'mixed' && item.assessment !== 'weak' && item.assessment !== 'not_assessed') {
@@ -542,19 +657,13 @@ export function validateAuditSynthesis(value: unknown): AuditSynthesisResult {
         concerns: strings(item.concerns, `standards assessment ${index}.concerns`),
       }
     }),
-    coverage_gaps: array(result.coverage_gaps, 'coverage_gaps', 20).map((item, index) => coverageGap(item, `coverage gap ${index}`)),
-    test_placement_issues: array(result.test_placement_issues, 'test_placement_issues', 15).map((item, index) => placementIssue(item, `placement issue ${index}`)),
-    priorities: array(result.priorities, 'priorities', 12).map((value, index) => {
-      const item = object(value, `priority ${index}`)
-      if (!Number.isInteger(item.rank) || (item.rank as number) < 1) throw new QualityReviewerError(`priority ${index}.rank is invalid`)
-      return {
-        rank: item.rank as number,
-        action: text(item.action, `priority ${index}.action`),
-        rationale: text(item.rationale, `priority ${index}.rationale`),
-        related_finding_rules: strings(item.related_finding_rules, `priority ${index}.related_finding_rules`),
-      }
-    }),
-    limitations: strings(result.limitations, 'limitations'),
+    coverage_gaps: section(parsedCoverageGaps, synthesisLimits.coverageGaps, 'coverage gaps'),
+    test_placement_issues: section(parsedPlacementIssues, synthesisLimits.placementIssues, 'test-placement issues'),
+    priorities: priorities.map(priority => ({
+      ...priority,
+      related_finding_rules: priority.related_finding_rules.filter(rule => retainedRules.has(rule)),
+    })),
+    limitations: uniqueStrings([...strings(result.limitations, 'limitations'), ...normalizationNotes]),
     context_actually_used: strings(result.context_actually_used, 'context_actually_used'),
   }
 }

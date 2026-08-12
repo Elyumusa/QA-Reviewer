@@ -499,6 +499,8 @@ The validator adds `source: "ai"` after validation. The model is not asked to pr
 
 Malformed or truncated model output is retried once with the configured larger output allowance and an exact explanation. Parseable global-map or synthesis JSON with a narrow schema defect goes directly to a targeted non-thinking repair request, avoiding another full-context call. Recoverable fetch/socket/connect and DNS failures receive error-specific bounded retries. HTTP 429 and temporary 5xx responses are retried, while permanent 4xx responses such as a missing key or invalid parameters are not.
 
+The model-facing synthesis schema still requests at most 30 findings, but local validation treats that number as a report-usability bound. It validates up to a hard safety maximum of 120 returned findings—including every source line—before selection. Exact rule/title duplicates are merged with their related locations and evidence. Remaining items are ranked by severity, confidence, evidence, recurrence, category, and original order; the strongest 30 are retained. This deterministic boundary guarantees that a model ignoring only `maxItems` cannot discard a completed audit, while malformed overflow items still fail and trigger repair.
+
 If the second output is invalid, that file receives an error. The remaining files continue to be reviewed.
 
 ### Step 10: Merge deterministic and AI findings
@@ -1104,7 +1106,7 @@ npm test
 npm run typecheck
 ```
 
-The test suite currently contains 71 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, deterministic global-map fallback, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, keep-alives, missing terminators, activity-aware timeouts, error-specific transport recovery, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/targeted-repair behavior, refusal handling, and API failure behavior.
+The test suite currently contains 75 passing tests covering WebApp-wide component classification, explicit type overrides, strict file validation, resolved-path repository boundaries, working-tree Git discovery, deterministic checks, semantic and adaptive chunking, deterministic global-map fallback, checkpoint identity/reuse, context collection, aliases, all three provider payloads and response shapes, DeepSeek SSE assembly, keep-alives, missing terminators, activity-aware timeouts, error-specific transport recovery, bounded synthesis normalization, overflow line validation, non-thinking format retries, partial evidence preservation, provider-specific CLI preflight, packaged CLI symlink execution, structured failures, bundled component/E2E standards fallback, wrong-directory behavior, focused/audit diagnostics, request/validation/targeted-repair behavior, refusal handling, and API failure behavior.
 
 Additional verification included:
 

@@ -255,6 +255,7 @@ export class AiAuditReviewer {
           maxTokens: 20_000,
           maxRetryTokens: 40_000,
           reasoningEffort: 'high',
+          retryThinking: 'disabled',
           jsonSchema: globalAuditMapJsonSchema,
           schemaName: 'audit_global_map',
           repair: {
@@ -313,7 +314,7 @@ export class AiAuditReviewer {
       maxRetryTokens: recoveryMode ? 20_000 : 40_000,
       reasoningEffort: 'high',
       thinking: recoveryMode ? 'disabled' : 'enabled',
-      retryThinking: recoveryMode ? 'disabled' : 'enabled',
+      retryThinking: 'disabled',
       jsonSchema: chunkAuditJsonSchema,
       schemaName: 'audit_chunk',
     })
@@ -406,6 +407,7 @@ export class AiAuditReviewer {
         maxTokens: 20_000,
         maxRetryTokens: 40_000,
         reasoningEffort: 'high',
+        retryThinking: 'disabled',
         jsonSchema: coverageAuditJsonSchema,
         schemaName: 'audit_coverage',
       })
@@ -414,6 +416,22 @@ export class AiAuditReviewer {
     }
 
     const evidenceExcerpts = buildEvidenceExcerpts(context.test_file.content, chunkResults, deterministicFindings)
+
+    const validateSynthesis = (value: unknown): AuditSynthesisResult => {
+      const rawFindingCount = typeof value === 'object' && value !== null && !Array.isArray(value) && Array.isArray((value as Record<string, unknown>).findings)
+        ? ((value as Record<string, unknown>).findings as unknown[]).length
+        : null
+      const validated = validateTestLines(
+        validateAuditSynthesis(value, { lineCount: inventory.metrics.line_count }),
+        inventory.metrics.line_count,
+      )
+      if (rawFindingCount !== null && rawFindingCount > validated.findings.length) {
+        this.onProgress(
+          `Normalized audit final synthesis from ${rawFindingCount} finding item(s) to ${validated.findings.length} highest-priority distinct finding(s); all returned items were validated before selection.`,
+        )
+      }
+      return validated
+    }
 
     const synthesis = await this.client.requestJson({
       operation: 'audit final synthesis',
@@ -441,7 +459,7 @@ export class AiAuditReviewer {
         evidenceExcerpts,
         isRetry: true,
       }),
-      validate: value => validateTestLines(validateAuditSynthesis(value), inventory.metrics.line_count),
+      validate: validateSynthesis,
       maxTokens: 30_000,
       maxRetryTokens: 60_000,
       reasoningEffort: 'high',

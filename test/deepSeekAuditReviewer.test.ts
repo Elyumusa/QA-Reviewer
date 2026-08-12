@@ -172,6 +172,48 @@ test('repairs a parseable global map without repeating the full test prompt', as
   assert.equal(requests.filter(request => request.system.includes('global test-structure analyst')).length, 1)
 })
 
+test('retries a content-empty global map with thinking disabled', async () => {
+  const context: ReviewContext = {
+    test_file: { path: 'Retry.cy.ts', content: "describe('retry', () => {\n  it('renders', () => cy.get('x-retry').should('exist'))\n})" },
+    diff: '', related_files: [],
+  }
+  const globalThinking: string[] = []
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }>; thinking: { type: string } }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      if (system.includes('global test-structure analyst')) {
+        globalThinking.push(body.thinking.type)
+        if (globalThinking.length === 1) {
+          return new Response(JSON.stringify({
+            model: 'test-model', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: null } }],
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return response({
+          summary: 'Retry suite.', suites: [{ name: 'retry', start_line: 1, end_line: 3, purpose: 'Rendering', key_behaviors: ['renders'] }],
+          shared_infrastructure: [], cross_suite_patterns: [], context_used: ['Retry.cy.ts'], limitations: [],
+        })
+      }
+      if (system.includes('test-quality evidence analyst')) return response({
+        chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Observable check.', strengths: [], concerns: [], context_used: ['Retry.cy.ts'],
+      })
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'No source context.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [], context_used: ['Retry.cy.ts'], limitations: [],
+      })
+      return response({
+        overall_assessment: 'Completed retry.', summary: 'Completed retry.', strengths: [], findings: [], standards_assessment: [], coverage_gaps: [],
+        test_placement_issues: [], priorities: [], limitations: [], context_actually_used: ['Retry.cy.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', '# Standards', context, [])
+  assert.equal(result.audit.execution.complete, true)
+  assert.deepEqual(globalThinking, ['enabled', 'disabled'])
+})
+
 test('continues chunk analysis with a deterministic global map after transport failure', async () => {
   const context: ReviewContext = {
     test_file: { path: 'Fallback.cy.ts', content: "describe('fallback', () => {\n  beforeEach(() => cy.viewport(800, 600))\n  it('renders', () => cy.get('x-fallback').should('exist'))\n})" },
