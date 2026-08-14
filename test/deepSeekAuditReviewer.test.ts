@@ -27,7 +27,11 @@ test('runs inventory, chunk, coverage, and synthesis as a bounded audit workflow
       content: `describe('address', () => {\n  it('renders', () => {\n    cy.get('lvl-address-picker').should('exist')\n  })\n})`,
     },
     diff: '',
-    related_files: [{ path: 'Address.ts', reason: 'Imported', content: 'export class Address {}', truncated: false }],
+    related_files: [{
+      path: 'src/Address.ts', reason: 'Imported', content: 'export class Address { /* truncated */ }', truncated: true,
+      original_character_count: 2_000, full_content_hash: 'address-source-hash',
+      full_content: `export class Address {\n  render() { return html\`<slot></slot>\` }\n}`,
+    }],
   }
   const systems: string[] = []
   const progress: string[] = []
@@ -119,6 +123,9 @@ test('runs inventory, chunk, coverage, and synthesis as a bounded audit workflow
   assert.deepEqual(result.audit.execution.response_models, ['test-model'])
   assert.equal(result.audit.execution.requests[0]?.usage.reasoning_tokens, 20)
   assert.equal(result.audit.strengths[0]?.title, 'Observable rendering check')
+  assert.equal(result.audit.context_manifest?.[1]?.status, 'truncated')
+  assert.ok((result.audit.context_manifest?.[1]?.targeted_excerpts ?? 0) > 0)
+  assert.ok(result.audit.execution.passes.includes('targeted full-source retrieval'))
   assert.equal(systems.length, 4)
   assert.ok(progress.some(message => message.includes('Inventory complete')))
   assert.ok(progress.some(message => message.includes('audit final synthesis')))

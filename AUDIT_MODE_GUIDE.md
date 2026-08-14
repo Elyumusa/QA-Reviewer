@@ -139,7 +139,18 @@ additional context budget:   180,000 characters
 maximum per related file:    100,000 characters
 ```
 
-The complete Cypress test remains outside this additional-context budget. Related context is still bounded and repository-local.
+The complete Cypress test remains outside this additional-context budget. Related base context is still bounded and repository-local. When a related file is truncated, the collector retains a complete local-only backing copy for targeted retrieval; that backing copy is not uploaded wholesale.
+
+#### Targeted full-source retrieval
+
+After semantic test chunks complete, the reviewer builds a retrieval query from identifiers present in the test, global map, and chunk evidence. It parses truncated TypeScript implementation files locally, indexes functions, methods, accessors, constructors, and properties, and selects:
+
+- Declarations whose names match the test or review evidence.
+- A small orientation set of high-value lifecycle and behavior declarations such as `render`, `handle*`, `load*`, `validate*`, and `connectedCallback`.
+
+Selected declarations are line-numbered and bounded to a separate 36,000-character budget. They are supplied to the coverage pass and final synthesis. Finding-specific recommendation evidence also searches the complete local backing source, so a method omitted from the base file’s middle can still support a safe recommendation.
+
+Every audit report contains a deterministic context manifest with each file’s complete/truncated status, original and supplied character counts, and targeted-excerpt count. The manifest is authoritative: model-generated claims that a collected implementation was unavailable are removed or replaced with its truthful truncated state.
 
 ### Pass 5: evidence synthesis and prioritization
 
@@ -172,7 +183,7 @@ Synthesis decides which findings belong in the final bounded report. A separate 
 - The most relevant sections parsed from the applicable Levelbuild standard.
 - Official Cypress documentation links already present in that standard.
 
-The model must classify replacement code as `exact`, `illustrative`, or `unavailable`. Exact code is accepted only when it is syntactically valid TypeScript and its repository-specific string literals are supported by collected code. Official URLs must match the standards-derived allowlist; the model cannot introduce a documentation URL. Illustrative and unavailable recommendations must state the adaptation or missing context.
+The model must classify replacement code as `exact`, `illustrative`, or `unavailable`. Exact code is accepted only when it is syntactically valid TypeScript and its repository-specific string literals are supported by collected code. Official URLs must match the standards-derived allowlist; the model cannot introduce a documentation URL. Illustrative and unavailable recommendations must state the adaptation or missing context. Code is not mandatory: architectural findings, multiple valid designs, and findings whose observable contract is absent should deliberately use prose plus `unavailable` rather than fabricate a snippet.
 
 This pass is useful but not allowed to destroy a completed audit. Parseable schema defects first receive a targeted non-thinking repair containing only the invalid result, validation error, and schema. If the result is still invalid, the orchestrator recursively subdivides that batch until valid findings are retained or one individual finding is proven irreparable. Empty prose falls back to the synthesis recommendation, unsupported standard headings are resolved or removed, and non-allowlisted URLs are filtered locally. Only an irreparable individual finding retains its original recommendation and receives a finding-specific limitation; successful siblings remain enriched.
 
@@ -484,7 +495,7 @@ The example is abbreviated: real output includes metrics, metric locations, stan
 
 - It does not execute Cypress or prove that tests pass.
 - It does not collect Istanbul/runtime coverage.
-- It cannot prove behavior from source files that were not collected or were truncated.
+- It cannot prove behavior from source files that were not collected. For truncated files, it can inspect retrieved declarations but may still miss behavior whose symbol was not selected or whose declaration exceeded the excerpt budget.
 - Its conditional/private-selector metrics are intentionally heuristic; they are leads, not verdicts.
 - It cannot guarantee the exact same wording or judgment as Codex or a human reviewer.
 - It does not autonomously search arbitrary repository files after the review begins.
@@ -509,6 +520,7 @@ The example is abbreviated: real output includes metrics, metric locations, stan
 | `src/types.ts` | Defines review mode, rich audit report structures, metrics, strengths, gaps, placement, priorities, and enhanced finding evidence |
 | `src/reportWriter.ts` | Writes the detailed audit Markdown sections while retaining focused output |
 | `src/contextCollector.ts` | Selects repository-local related context; audit mode gives it larger limits |
+| `src/targetedSourceRetrieval.ts` | Retrieves bounded declarations from complete local backing sources, builds the context manifest, and reconciles contradictory limitations |
 | `src/git.ts` | Strictly validates explicit tests and discovers committed, staged, unstaged, and untracked Cypress changes with resolved-path safety |
 | `test/auditInventory.test.ts` | Verifies deterministic measurements and chunk boundaries |
 | `test/deepSeekAuditReviewer.test.ts` | Verifies the complete three-request one-chunk workflow with a mocked DeepSeek endpoint |

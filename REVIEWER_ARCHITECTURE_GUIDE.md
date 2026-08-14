@@ -330,7 +330,7 @@ Related files larger than `maxSingleFileCharacters`, default `12,000`, are conde
 
 If that produces too little content, a head/tail fallback is used. The `truncated` flag tells the prompt and report that the content is partial.
 
-This is intentionally bounded context collection, not a codebase indexer. It does not perform AST analysis, semantic search, dependency graph traversal, or whole-folder uploads.
+The baseline collector is intentionally bounded context collection rather than a codebase indexer. It does not traverse whole dependency graphs or upload folders. Audit mode adds a later, narrowly scoped AST retrieval stage for files that were truncated: the full file remains local, matching declarations are extracted, and only bounded line-numbered excerpts enter later prompts.
 
 ### Step 6: Run deterministic checks
 
@@ -501,7 +501,9 @@ Malformed or truncated model output is retried once with the configured larger o
 
 The model-facing synthesis schema still requests at most 30 findings, but local validation treats that number as a report-usability bound. It validates up to a hard safety maximum of 120 returned findings—including every source line—before selection. Exact rule/title duplicates are merged with their related locations and evidence. Remaining items are ranked by severity, confidence, evidence, recurrence, category, and original order; the strongest 30 are retained. This deterministic boundary guarantees that a model ignoring only `maxItems` cannot discard a completed audit, while malformed overflow items still fail and trigger repair.
 
-After that selection boundary, a recommendation-enrichment stage processes at most five final findings per non-thinking request. This ordering is deliberate: the expensive evidence assembly and code generation happen only for findings that will appear in the report. Internal standards remain the policy source. `standardsGuidance.ts` parses their level-two sections and accepts only `docs.cypress.io` links already embedded in them. Each batch receives numbered faulty-code windows plus matching helper and related-source windows. `recommendationSchema.ts` rejects unknown finding keys, malformed TypeScript, invented sensitive selectors/endpoints, and inconsistent `exact`/`illustrative`/`unavailable` classifications. It locally recovers empty prose, resolves supported internal headings, filters non-allowlisted URLs, and permits self-contained deterministic fixture values that the replacement both defines and asserts.
+After the evidence chunks, `targetedSourceRetrieval.ts` uses identifiers from the test and extracted analysis to locate declarations inside complete local backing copies of truncated sources. It also selects a small lifecycle/behavior orientation set. The resulting excerpts have global source lines, a separate size ceiling, and an authoritative manifest. Complete backing files are deliberately excluded from prompts, reports, and checkpoint serialization. This avoids the false choice between losing the middle of a large component and uploading the entire implementation on every pass.
+
+After the final finding-selection boundary, a recommendation-enrichment stage processes at most five findings per non-thinking request. This ordering is deliberate: the expensive evidence assembly and optional code generation happen only for findings that will appear in the report. Internal standards remain the policy source. `standardsGuidance.ts` parses their level-two sections and accepts only `docs.cypress.io` links already embedded in them. Each batch receives numbered faulty-code windows plus matching helper and full-source targeted windows. `recommendationSchema.ts` rejects unknown finding keys, malformed TypeScript, invented sensitive selectors/endpoints, and inconsistent `exact`/`illustrative`/`unavailable` classifications. It locally recovers empty prose, resolves supported internal headings, filters non-allowlisted URLs, and permits self-contained deterministic fixture values that the replacement both defines and asserts. A snippet is not required: prose-only `unavailable` is correct when code would depend on missing behavior or an architectural decision.
 
 Parseable enrichment defects use a targeted repair request containing only the invalid object. If repair fails—or the provider returned invalid JSON—the orchestrator recursively splits the failed batch. This ensures a malformed snippet for one finding cannot erase valid code recommendations for four neighbors. Only a single finding that remains invalid after isolation falls back to its original synthesis recommendation.
 
@@ -612,6 +614,21 @@ Each related context entry includes both content and an explanation of why it wa
   "truncated": false
 }
 ```
+
+Truncated entries additionally retain local-only original-size/hash metadata and a complete backing string during the current process. The public audit report exposes only a context manifest:
+
+```typescript
+{
+  path: string
+  role: 'test' | 'related'
+  status: 'complete' | 'truncated'
+  original_characters: number
+  supplied_characters: number
+  targeted_excerpts: number
+}
+```
+
+The full backing content is excluded from report output and checkpoint payloads. Its SHA-256 digest is included in checkpoint identity so a change in an omitted source region still invalidates cached analysis.
 
 The report exposes selected paths under `context_files_used`. Finding-level `context_used` is separately supplied by the AI or deterministic rule.
 

@@ -160,7 +160,7 @@ export function markdownReport(report: ReviewReport): string {
         if (finding.evidence?.length) lines.push('', ...finding.evidence.map(evidence => `- Evidence: ${evidence}`))
         lines.push('', `Recommendation: ${finding.suggestion}`)
         if (finding.recommendation_code_kind) {
-          lines.push('', `Recommendation code: ${finding.recommendation_code_kind}`)
+          lines.push('', `Suggested-code confidence: ${finding.recommendation_code_kind}`)
         }
         if (finding.replacement_code) lines.push('', '```ts', finding.replacement_code, '```')
         if (finding.recommendation_assumptions?.length) {
@@ -216,6 +216,17 @@ export function markdownReport(report: ReviewReport): string {
       lines.push('', '### Audit limitations')
       if (audit.limitations.length === 0) lines.push('', 'No material limitations were reported.')
       else lines.push('', ...audit.limitations.map(limitation => `- ${limitation}`))
+
+      if (audit.context_manifest?.length) {
+        lines.push(
+          '',
+          '### Context manifest',
+          '',
+          '| File | Role | Base context | Original chars | Supplied chars | Targeted excerpts |',
+          '|---|---|---|---:|---:|---:|',
+          ...audit.context_manifest.map(item => `| ${escapeCell(item.path)} | ${item.role} | ${item.status} | ${item.original_characters} | ${item.supplied_characters} | ${item.targeted_excerpts} |`),
+        )
+      }
       lines.push(
         '',
         `Audit mechanics: ${audit.execution.test_chunks_reviewed}/${audit.execution.test_chunks_total} test chunks, ${audit.execution.source_context_files_reviewed} related context files, ${audit.execution.ai_calls} API request(s). Complete: ${audit.execution.complete}. Global map: ${audit.execution.global_map_source}. Provider: ${audit.execution.provider}. Requested model: ${audit.execution.requested_model}. API response model(s): ${audit.execution.response_models.join(', ') || 'not reported'}. Reused passes: ${audit.execution.reused_passes.join(', ') || 'none'}. Adaptive recoveries: ${audit.execution.adaptive_recoveries.join(', ') || 'none'}.`,

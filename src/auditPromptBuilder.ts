@@ -11,6 +11,7 @@ import type { SourceChunk } from './auditInventory.js'
 import type { AuditInventory, Finding, ReviewContext, TestType } from './types.js'
 import { buildFindingEvidence, officialReferencesForSections, relevantStandardsSections, type StandardsGuidance } from './standardsGuidance.js'
 import { findingKey, recommendationBatchJsonSchema } from './recommendationSchema.js'
+import { contextManifest } from './targetedSourceRetrieval.js'
 
 export const chunkAuditInstructions = `You are the test-quality evidence analyst in the Levelbuild Cypress audit workflow.
 
@@ -73,6 +74,7 @@ Rules:
 - Priorities must be ordered by engineering value and reference finding rule IDs where applicable.
 - Return at most 12 strengths, 30 consolidated findings, 20 coverage gaps, 15 placement issues, and 12 priorities.
 - State important context limitations instead of hiding them.
+- Treat the supplied context manifest as authoritative. A truncated source was available in part; never describe it as unavailable or missing.
 - Return JSON matching the supplied schema and nothing else.`
 
 export const synthesisRepairInstructions = `You repair a nearly valid Levelbuild Cypress audit JSON object.
@@ -81,12 +83,13 @@ Preserve all supported analysis and evidence. Change only what is required to sa
 
 export const recommendationEnrichmentInstructions = `You are the recommendation engineer for a completed Levelbuild Cypress audit.
 
-For every supplied finding, produce a concrete correction grounded in the exact repository evidence and internal standards.
+For every supplied finding, produce a concrete recommendation grounded in the exact repository evidence and internal standards.
 
 Rules:
 - Do not rediscover, remove, combine, reprioritize, or change the finding. Improve only its recommendation.
 - Explain what code should change and why that change proves the intended behavior.
-- Prefer an exact TypeScript/Cypress replacement that can be pasted into this test when the supplied evidence proves every selector, alias, endpoint, method, value, and expectation.
+- Include an exact TypeScript/Cypress replacement when the supplied evidence proves every selector, alias, endpoint, method, value, and expectation.
+- Do not force a snippet merely to fill the field. Prose-only is the responsible result for architectural concerns, multiple valid designs, or missing behavioral contracts.
 - Use code_kind "exact" only when every repository-specific literal and behavior appears in the supplied evidence. Never invent a selector, alias, endpoint, fixture, event, method, expected value, or component state.
 - Use code_kind "illustrative" only when a useful Cypress pattern can be shown but adaptation is genuinely required; list each required assumption.
 - Use code_kind "unavailable" with replacement_code null only when a responsible snippet cannot be produced from the supplied context; state the missing context in assumptions.
@@ -121,6 +124,16 @@ function relatedContext(context: ReviewContext): string {
     `TRUNCATED: ${file.truncated}`,
     file.content,
   ].join('\n')).join('\n\n--- RELATED FILE ---\n\n')
+}
+
+function targetedSourceContext(context: ReviewContext): string {
+  if (!context.targeted_source_excerpts?.length) return 'No additional full-source excerpts were selected.'
+  return context.targeted_source_excerpts.map(excerpt => [
+    `FILE: ${excerpt.path}`,
+    `SYMBOL: ${excerpt.symbol}`,
+    `LINES: ${excerpt.start_line}-${excerpt.end_line}`,
+    excerpt.content,
+  ].join('\n')).join('\n\n--- TARGETED SOURCE EXCERPT ---\n\n')
 }
 
 function numberedContent(content: string): string {
@@ -214,6 +227,8 @@ export function buildCoverageAuditInput(options: {
     section('global_test_map', JSON.stringify(options.globalMap, null, 2)),
     section('test_review_evidence', JSON.stringify(options.chunkResults, null, 2)),
     section('production_and_related_context', relatedContext(options.context)),
+    section('authoritative_context_manifest', JSON.stringify(contextManifest(options.context), null, 2)),
+    section('targeted_full_source_excerpts', targetedSourceContext(options.context)),
     section('required_json_schema', JSON.stringify(coverageAuditJsonSchema, null, 2)),
   ].join('\n\n')
   return options.isRetry ? retry(input) : input
@@ -241,11 +256,8 @@ export function buildAuditSynthesisInput(options: {
     section('standards_chunk_reviews', JSON.stringify(options.chunkResults, null, 2)),
     section('source_coverage_review', JSON.stringify(options.coverageResult, null, 2)),
     section('raw_test_evidence_excerpts', options.evidenceExcerpts || 'No excerpts were selected.'),
-    section('available_context_paths', JSON.stringify(options.context.related_files.map(file => ({
-      path: file.path,
-      reason: file.reason,
-      truncated: file.truncated,
-    })), null, 2)),
+    section('authoritative_context_manifest', JSON.stringify(contextManifest(options.context), null, 2)),
+    section('targeted_full_source_excerpts', targetedSourceContext(options.context)),
     section('required_json_schema', JSON.stringify(auditSynthesisJsonSchema, null, 2)),
   ].join('\n\n')
   return options.isRetry ? retry(input) : input

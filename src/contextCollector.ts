@@ -1,4 +1,5 @@
 import { readFile, realpath, stat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 
 import { fileDiff, trackedFiles } from './git.js'
@@ -195,6 +196,9 @@ async function addCandidate(
       reason: candidate.reason,
       content,
       truncated: content.length < original.length,
+      original_character_count: original.length,
+      full_content_hash: createHash('sha256').update(original).digest('hex'),
+      ...(content.length < original.length ? { full_content: original } : {}),
     })
     seen.add(relativePath)
     remainingCharacters.value -= content.length

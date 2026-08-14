@@ -127,6 +127,15 @@ export interface AuditExecution {
   adaptive_recoveries: string[]
 }
 
+export interface AuditContextManifestEntry {
+  path: string
+  role: 'test' | 'related'
+  status: 'complete' | 'truncated'
+  original_characters: number
+  supplied_characters: number
+  targeted_excerpts: number
+}
+
 export interface AiTokenUsage {
   prompt_tokens: number | null
   completion_tokens: number | null
@@ -167,6 +176,7 @@ export interface AuditDetails {
   priorities: AuditPriority[]
   limitations: string[]
   context_actually_used: string[]
+  context_manifest?: AuditContextManifestEntry[]
   execution: AuditExecution
 }
 
@@ -175,6 +185,20 @@ export interface RelatedFile {
   reason: string
   content: string
   truncated: boolean
+  /** Original size before prompt-budget condensation. */
+  original_character_count?: number
+  /** Digest of the complete file, used to invalidate audit checkpoints safely. */
+  full_content_hash?: string
+  /** Local-only backing content. Prompt builders must expose only targeted excerpts. */
+  full_content?: string
+}
+
+export interface TargetedSourceExcerpt {
+  path: string
+  symbol: string
+  start_line: number
+  end_line: number
+  content: string
 }
 
 export interface ReviewContext {
@@ -184,6 +208,7 @@ export interface ReviewContext {
   }
   diff: string
   related_files: RelatedFile[]
+  targeted_source_excerpts?: TargetedSourceExcerpt[]
 }
 
 export interface FileReview {

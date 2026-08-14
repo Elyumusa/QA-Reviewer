@@ -35,6 +35,7 @@ import {
 } from './auditSchema.js'
 import { findingKey, recommendationBatchJsonSchema, validateRecommendationBatch } from './recommendationSchema.js'
 import { buildFindingEvidence, officialReferencesForSections, parseStandardsGuidance, relevantStandardsSections } from './standardsGuidance.js'
+import { contextManifest, reconcileContextLimitations, retrieveTargetedSourceExcerpts } from './targetedSourceRetrieval.js'
 import { AiApiError, AiJsonClient, AiTransportError } from './aiJsonClient.js'
 import { DeepSeekJsonClient, type DeepSeekClientOptions } from './deepSeekClient.js'
 import { QualityReviewerError, errorMessage } from './errors.js'
@@ -400,6 +401,17 @@ export class AiAuditReviewer {
 
     const chunkResults = await mapConcurrent(chunks, this.chunkConcurrency, chunk => reviewChunk(chunk))
 
+    context.targeted_source_excerpts = retrieveTargetedSourceExcerpts(
+      context,
+      `${JSON.stringify(globalMap)}\n${JSON.stringify(chunkResults)}`,
+    )
+    const truncatedSourceCount = context.related_files.filter(file => file.truncated && file.full_content).length
+    if (truncatedSourceCount > 0) {
+      this.onProgress(
+        `Retrieved ${context.targeted_source_excerpts.length} semantic excerpt(s) from ${truncatedSourceCount} truncated full-source file(s) for coverage and recommendations.`,
+      )
+    }
+
     const validateCoverage = (value: unknown): CoverageAuditResult => {
       const result = validateCoverageAudit(value)
       for (const issue of result.test_placement_issues) {
@@ -489,7 +501,10 @@ export class AiAuditReviewer {
 
     const guidance = parseStandardsGuidance(standards)
     const officialReferencesByUrl = new Map(guidance.officialReferences.map(reference => [reference.url, reference]))
-    const repositoryText = [context.test_file.content, ...context.related_files.map(file => file.content)].join('\n')
+    const repositoryText = [
+      context.test_file.content,
+      ...context.related_files.map(file => file.full_content ?? file.content),
+    ].join('\n')
     const enrichedFindings = new Map<string, Finding>()
     const recommendationLimitations: string[] = []
     let enrichedFindingCount = 0
@@ -586,13 +601,14 @@ export class AiAuditReviewer {
         coverage_gaps: synthesis.coverage_gaps,
         test_placement_issues: synthesis.test_placement_issues,
         priorities: [...synthesis.priorities].sort((left, right) => left.rank - right.rank),
-        limitations: [...new Set([
+        limitations: reconcileContextLimitations([
           ...globalMap.limitations,
           ...coverageResult.limitations,
           ...synthesis.limitations,
           ...recommendationLimitations,
-        ])],
+        ], context),
         context_actually_used: [...new Set(synthesis.context_actually_used)],
+        context_manifest: contextManifest(context),
         execution: {
           complete: true,
           global_map_source: globalMapSource,
@@ -612,6 +628,7 @@ export class AiAuditReviewer {
             'global full-file structure map',
             'standards review by test chunk',
             'source and coverage cross-check',
+            ...(context.targeted_source_excerpts.length ? ['targeted full-source retrieval'] : []),
             'evidence synthesis and prioritization',
             ...(enrichedFindingCount > 0 ? ['standards-grounded recommendation enrichment'] : []),
           ],
@@ -655,12 +672,13 @@ export class AiAuditReviewer {
           coverage_gaps: coverageResult?.coverage_gaps ?? [],
           test_placement_issues: coverageResult?.test_placement_issues ?? [],
           priorities: [],
-          limitations: [...new Set(limitations)],
+          limitations: reconcileContextLimitations(limitations, context),
           context_actually_used: [...new Set([
             ...(globalMap?.context_used ?? []),
             ...evidence.flatMap(result => result.context_used),
             ...(coverageResult?.context_used ?? []),
           ])],
+          context_manifest: contextManifest(context),
         execution: {
           complete: false,
           global_map_source: globalMapSource,

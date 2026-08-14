@@ -6,7 +6,7 @@ import type { ChunkAuditResult, CoverageAuditResult, GlobalAuditMapResult } from
 import type { ReviewContext, TestType } from './types.js'
 
 const CHECKPOINT_VERSION = 3
-export const AUDIT_PIPELINE_REVISION = 'audit-pipeline-v6-recommendation-enrichment'
+export const AUDIT_PIPELINE_REVISION = 'audit-pipeline-v7-targeted-source-retrieval'
 
 export interface AuditCheckpoint {
   version: number
@@ -33,7 +33,14 @@ export function auditCheckpointKey(options: {
     testType: options.testType,
     standards: options.standards,
     testFile: options.context.test_file,
-    relatedFiles: options.context.related_files,
+    relatedFiles: options.context.related_files.map(file => ({
+      path: file.path,
+      reason: file.reason,
+      content: file.content,
+      truncated: file.truncated,
+      original_character_count: file.original_character_count,
+      full_content_hash: file.full_content_hash,
+    })),
     model: options.model,
     provider: options.provider,
     providerEndpoint: options.providerEndpoint,

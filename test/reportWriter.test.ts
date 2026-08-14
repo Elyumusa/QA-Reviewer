@@ -26,6 +26,7 @@ test('renders enriched recommendation code, assumptions, and official Cypress gu
         metrics: { line_count: 20, suite_count: 1, test_count: 1, any_cast_lines: 1, forced_interactions: 0, before_each_hooks: 0, after_each_hooks: 0, fixed_waits: 0, skipped_tests: 0, focused_tests: 0, conditional_blocks: 1, silent_conditional_assertion_blocks: 1, private_member_access_lines: 0, broad_exception_handlers: 0, generic_selector_calls: 0 },
         metric_locations: { line_count: [], suite_count: [], test_count: [], any_cast_lines: [9], forced_interactions: [], before_each_hooks: [], after_each_hooks: [], fixed_waits: [], skipped_tests: [], focused_tests: [], conditional_blocks: [10], silent_conditional_assertion_blocks: [10], private_member_access_lines: [], broad_exception_handlers: [], generic_selector_calls: [] },
         strengths: [], standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [], limitations: [], context_actually_used: ['Chatbot.cy.ts'],
+        context_manifest: [{ path: 'Chatbot.ts', role: 'related', status: 'truncated', original_characters: 200000, supplied_characters: 100000, targeted_excerpts: 4 }],
         execution: { complete: true, global_map_source: 'ai', test_chunks_reviewed: 1, test_chunks_total: 1, source_context_files_reviewed: 1, ai_calls: 5, provider: 'deepseek', passes: ['standards-grounded recommendation enrichment'], requested_model: 'test-model', response_models: ['test-model'], requests: [], checkpoint_key: null, reused_passes: [], adaptive_recoveries: [] },
       },
     }],
@@ -33,7 +34,9 @@ test('renders enriched recommendation code, assumptions, and official Cypress gu
 
   const markdown = markdownReport(report)
   assert.match(markdown, /Recommendation: Assert the rendered fallback/)
-  assert.match(markdown, /Recommendation code: exact/)
+  assert.match(markdown, /Suggested-code confidence: exact/)
   assert.match(markdown, /```ts\ncy\.get\('@chatbot'\)/)
+  assert.match(markdown, /### Context manifest/)
+  assert.match(markdown, /Chatbot\.ts \| related \| truncated \| 200000 \| 100000 \| 4/)
   assert.match(markdown, /\[Cypress conditional testing\]\(https:\/\/docs\.cypress\.io\/app\/guides\/conditional-testing\)/)
 })

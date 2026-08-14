@@ -130,8 +130,9 @@ export function buildFindingEvidence(finding: Finding, context: ReviewContext): 
   const supportingTestWindows = matchingWindows(context.test_file.content, terms, 3)
     .filter(window => !window.includes(`${finding.line}:`))
   const related = context.related_files.flatMap(file => {
-    const windows = matchingWindows(file.content, terms, 2)
-    return windows.map(window => `FILE: ${file.path}\n${window}`)
+    const source = file.full_content ?? file.content
+    const windows = matchingWindows(source, terms, 2)
+    return windows.map(window => `FILE: ${file.path}${file.truncated && file.full_content ? ' (targeted from complete local source)' : ''}\n${window}`)
   }).slice(0, 4)
 
   return [

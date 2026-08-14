@@ -70,3 +70,18 @@ test('builds numbered repository evidence around a finding and matching source b
   assert.match(evidence, /FILE: Chatbot\.ts/)
   assert.match(evidence, /chat-title-text/)
 })
+
+test('builds finding evidence from complete local source when the prompt copy omitted the matching method', () => {
+  const context: ReviewContext = {
+    test_file: { path: 'Chatbot.cy.ts', content: "cy.get('@chatbot').then(el => el[0].loadUserInfo())\n\n\nif (true) {}" },
+    diff: '',
+    related_files: [{
+      path: 'Chatbot.ts', reason: 'Imported component', content: 'export class Chatbot { /* truncated */ }', truncated: true,
+      full_content: "export class Chatbot {\n  loadUserInfo() { return fetch('/Api/User') }\n}",
+    }],
+  }
+
+  const evidence = buildFindingEvidence(finding, context)
+  assert.match(evidence, /targeted from complete local source/)
+  assert.match(evidence, /loadUserInfo\(\)/)
+})

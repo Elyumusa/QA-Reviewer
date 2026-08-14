@@ -111,3 +111,27 @@ test('does not collect imported context through a symlink outside the repository
 
   assert.deepEqual(result.related_files, [])
 })
+
+test('retains complete local backing content and truthful size metadata for a truncated imported source', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'qa-review-context-full-source-'))
+  t.after(async () => rm(root, { recursive: true, force: true }))
+
+  const testFile = 'WebAppComponents/ClientApp/src/components/example/Example.cy.ts'
+  const source = `export class Example {\n${'  filler = true\n'.repeat(150)}  handleSave() { return 'saved' }\n}`
+  await createFile(root, testFile, "import './Example'\nit('saves', () => { cy.get('lvl-example').then(el => el[0].handleSave()) })")
+  await createFile(root, 'WebAppComponents/ClientApp/src/components/example/Example.ts', source)
+  await execFileAsync('git', ['init'], { cwd: root })
+  await execFileAsync('git', ['add', '.'], { cwd: root })
+
+  const result = await collectContext(root, testFile, null, {
+    maxRelatedFiles: 2,
+    maxContextCharacters: 1_000,
+    maxSingleFileCharacters: 300,
+  })
+
+  const implementation = result.related_files.find(file => file.path.endsWith('/Example.ts'))
+  assert.equal(implementation?.truncated, true)
+  assert.equal(implementation?.original_character_count, source.length)
+  assert.equal(implementation?.full_content, source)
+  assert.match(implementation?.full_content_hash ?? '', /^[a-f0-9]{64}$/)
+})

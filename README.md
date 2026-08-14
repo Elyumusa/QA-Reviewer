@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.5
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.6
 ```
 
 Then run the installed command from the WebApp root:
@@ -37,7 +37,7 @@ npx qa-review --help
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
 
-To upgrade an earlier GitHub installation to the resilient standards-grounded recommendation release, run the same command with `#v0.1.5`; this updates the commit pinned in `package-lock.json`.
+To upgrade an earlier GitHub installation to the targeted-source and evidence-calibrated recommendation release, run the same command with `#v0.1.6`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
@@ -220,7 +220,8 @@ Audit mode performs a bounded sequence of passes:
 3. Standards review over semantic test chunks.
 4. Source and coverage cross-check.
 5. Final evidence synthesis and prioritization.
-6. Batched recommendation enrichment for the final findings, using exact repository windows, relevant internal-standard sections, and only official Cypress links already allowlisted by those standards.
+6. Targeted retrieval of relevant declarations from complete local copies of implementation files that exceeded the base-context budget.
+7. Batched recommendation enrichment for the final findings, using exact repository windows, relevant internal-standard sections, and only official Cypress links already allowlisted by those standards.
 
 The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, stream activity, and token usage. DeepSeek uses SSE streaming so long reasoning responses and keep-alives continuously move data over the connection. The client separates connection, stream-inactivity, and total safety timeouts instead of aborting every active stream after one fixed duration.
 
@@ -228,7 +229,9 @@ Parseable schema-invalid global maps receive a small non-thinking repair contain
 
 The final audit report is bounded to 30 synthesized findings so it remains usable. If a provider returns more, the reviewer validates every item and every source line first, merges exact rule/title repeats, and retains the strongest 30 using severity, confidence, evidence, and recurrence. The report records the original and retained counts in its limitations. A presentation-count overflow therefore does not turn an otherwise complete audit into an error.
 
-After synthesis, audit mode improves recommendations in batches of at most five findings. Internal standards remain the policy source; official Cypress pages linked by those standards are supporting authority. Each recommendation receives the exact faulty code window, matching test helpers, and matching related-source windows. Returned snippets are labelled `exact`, `illustrative`, or `unavailable`. Exact snippets are checked for valid TypeScript and repository support for sensitive selectors and endpoints. A replacement may introduce deterministic stub/fixture data when it defines and asserts the same value.
+Large related files retain a complete local-only backing copy while their normal prompt content remains bounded. After the test evidence passes, the reviewer extracts identifiers used by the test and analysis, locates matching TypeScript declarations in the complete source, and supplies bounded line-numbered excerpts to coverage and recommendation passes. A deterministic context manifest records complete/truncated status, original and supplied character counts, and targeted-excerpt counts. Full backing files are never written to reports or checkpoints.
+
+After synthesis, audit mode improves recommendations in batches of at most five findings. Internal standards remain the policy source; official Cypress pages linked by those standards are supporting authority. Each recommendation receives the exact faulty code window, matching test helpers, and matching related-source windows. Returned snippets are labelled `exact`, `illustrative`, or `unavailable`. Snippets are intentionally optional: architectural concerns, multiple valid designs, or missing behavioral contracts should remain prose-only instead of receiving invented code. Exact snippets are checked for valid TypeScript and repository support for sensitive selectors and endpoints. A replacement may introduce deterministic stub/fixture data when it defines and asserts the same value.
 
 Parseable recommendation defects receive a small targeted repair rather than another full-context request. If a batch is still invalid, it is recursively divided until valid neighboring recommendations are retained and only a genuinely irreparable individual finding falls back to its synthesis recommendation. Empty recommendation prose reuses the validated synthesis text, unknown standard headings are resolved or dropped, and non-allowlisted URLs are removed locally. A provider failure in this optional stage therefore preserves the completed audit and records a finding-specific limitation instead of discarding an entire batch.
 
@@ -236,7 +239,7 @@ An enriched Markdown finding resembles:
 
 ```text
 Recommendation: Remove the conditional production-method call and assert the rendered fallback title after the existing failed request completes.
-Recommendation code: exact
+Suggested-code confidence: exact
 ```
 
 ```ts
@@ -252,7 +255,7 @@ cy.get('@chatbot')
 
 The report then lists the applicable internal-standard heading and clickable allowlisted Cypress guidance. The reviewer never browses documentation during an audit.
 
-If a finding has only a prose recommendation, inspect `audit.limitations`. It will identify the exact finding whose enrichment could not be accepted. Other findings from the same original batch can still contain enriched code in `v0.1.5` and later.
+If a finding has only a prose recommendation, inspect its suggested-code confidence and assumptions. `unavailable` can be an intentional safety decision—not an enrichment failure—when a responsible snippet would require an invented selector, behavioral contract, or architectural choice. Actual enrichment failures are separately identified in `audit.limitations`.
 
 ## Troubleshooting
 
