@@ -81,6 +81,10 @@ export const synthesisRepairInstructions = `You repair a nearly valid Levelbuild
 
 Preserve all supported analysis and evidence. Change only what is required to satisfy the supplied validation error and schema. Do not add new findings, selectors, endpoints, events, or application behavior. Return the complete repaired JSON object and nothing else.`
 
+export const coverageRepairInstructions = `You repair a malformed or nearly valid Levelbuild Cypress source-and-coverage JSON object.
+
+Preserve all supported covered behaviors, coverage gaps, placement issues, evidence, context, and limitations. Correct only JSON syntax and the supplied validation error. Do not add new behavior, selectors, endpoints, findings, or source claims. Return one complete JSON object matching the supplied schema and nothing else.`
+
 export const recommendationEnrichmentInstructions = `You are the recommendation engineer for a completed Levelbuild Cypress audit.
 
 For every supplied finding, produce a concrete recommendation grounded in the exact repository evidence and internal standards.
@@ -271,6 +275,16 @@ export function buildAuditSynthesisRepairInput(
     `Validation error: ${validationError}`,
     section('invalid_audit_json', JSON.stringify(invalidValue, null, 2)),
     section('required_json_schema', JSON.stringify(auditSynthesisJsonSchema, null, 2)),
+  ].join('\n\n')
+}
+
+export function buildCoverageRepairInput(invalidValue: unknown, validationError: string): string {
+  return [
+    `Validation or JSON error: ${validationError}`,
+    section('invalid_coverage_output', typeof invalidValue === 'object' && invalidValue !== null && 'malformed_json' in invalidValue
+      ? String((invalidValue as { malformed_json: unknown }).malformed_json)
+      : JSON.stringify(invalidValue, null, 2)),
+    section('required_json_schema', JSON.stringify(coverageAuditJsonSchema, null, 2)),
   ].join('\n\n')
 }
 

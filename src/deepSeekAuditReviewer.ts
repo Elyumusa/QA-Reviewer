@@ -5,6 +5,7 @@ import {
   buildAuditSynthesisInput,
   buildChunkAuditInput,
   buildCoverageAuditInput,
+  buildCoverageRepairInput,
   buildEvidenceExcerpts,
   buildGlobalAuditMapInput,
   buildGlobalAuditMapRepairInput,
@@ -12,6 +13,7 @@ import {
   buildRecommendationRepairInput,
   chunkAuditInstructions,
   coverageAuditInstructions,
+  coverageRepairInstructions,
   globalAuditMapInstructions,
   globalMapRepairInstructions,
   recommendationEnrichmentInstructions,
@@ -424,21 +426,44 @@ export class AiAuditReviewer {
       reusedPasses.push('source and coverage cross-check')
       this.onProgress('Reusing checkpointed source and coverage cross-check.')
     } else {
-      coverageResult = await this.client.requestJson({
-        operation: 'audit source and coverage cross-check',
-        system: coverageAuditInstructions,
-        input: buildCoverageAuditInput({ testType, standards, context, inventory, globalMap, chunkResults }),
-        retryInput: buildCoverageAuditInput({ testType, standards, context, inventory, globalMap, chunkResults, isRetry: true }),
-        validate: validateCoverage,
-        maxTokens: 20_000,
-        maxRetryTokens: 40_000,
-        reasoningEffort: 'high',
-        retryThinking: 'disabled',
-        jsonSchema: coverageAuditJsonSchema,
-        schemaName: 'audit_coverage',
-      })
-      checkpoint.coverage = coverageResult
-      await this.checkpointStore.save(checkpoint)
+      try {
+        coverageResult = await this.client.requestJson({
+          operation: 'audit source and coverage cross-check',
+          system: coverageAuditInstructions,
+          input: buildCoverageAuditInput({ testType, standards, context, inventory, globalMap, chunkResults }),
+          retryInput: buildCoverageAuditInput({ testType, standards, context, inventory, globalMap, chunkResults, isRetry: true }),
+          validate: validateCoverage,
+          maxTokens: 20_000,
+          maxRetryTokens: 40_000,
+          reasoningEffort: 'high',
+          retryThinking: 'disabled',
+          jsonSchema: coverageAuditJsonSchema,
+          schemaName: 'audit_coverage',
+          repair: {
+            system: coverageRepairInstructions,
+            buildInput: buildCoverageRepairInput,
+            maxTokens: 24_000,
+          },
+        })
+        checkpoint.coverage = coverageResult
+        await this.checkpointStore.save(checkpoint)
+      } catch (error) {
+        if (error instanceof AiTransportError || error instanceof AiApiError) throw error
+        coverageResult = {
+          summary: 'The AI source-and-coverage cross-check could not be validated; final synthesis continued without asserting coverage gaps.',
+          covered_behaviors: [],
+          coverage_gaps: [],
+          test_placement_issues: [],
+          context_used: [context.test_file.path, 'deterministic context manifest', 'targeted source excerpts'],
+          limitations: [
+            `The source-and-coverage AI pass remained invalid after retry and targeted repair: ${errorMessage(error)}`,
+            'No coverage gap was inferred from the failed pass; test-chunk evidence and targeted source excerpts remained available to final synthesis.',
+          ],
+        }
+        adaptiveRecoveries.push('source and coverage cross-check (conservative fallback)')
+        this.onProgress(`Coverage output could not be repaired: ${errorMessage(error)}`)
+        this.onProgress('Continuing final synthesis with a conservative empty coverage result; no unsupported coverage gaps will be invented.')
+      }
     }
 
     const evidenceExcerpts = buildEvidenceExcerpts(context.test_file.content, chunkResults, deterministicFindings)

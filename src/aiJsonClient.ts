@@ -272,8 +272,10 @@ export class AiJsonClient {
     let firstError: unknown
     let firstParsed: unknown
     let firstWasParsed = false
+    let firstText: string | undefined
     try {
-      firstParsed = JSON.parse(extractOutputText(firstResponse, operation, this.provider, firstMaxTokens)) as unknown
+      firstText = extractOutputText(firstResponse, operation, this.provider, firstMaxTokens)
+      firstParsed = JSON.parse(firstText) as unknown
       firstWasParsed = true
       return options.validate(firstParsed)
     } catch (error) {
@@ -308,8 +310,10 @@ export class AiJsonClient {
     )
     let retryParsed: unknown
     let retryWasParsed = false
+    let retryText: string | undefined
     try {
-      retryParsed = JSON.parse(extractOutputText(retryResponse, operation, this.provider, retryMaxTokens)) as unknown
+      retryText = extractOutputText(retryResponse, operation, this.provider, retryMaxTokens)
+      retryParsed = JSON.parse(retryText) as unknown
       retryWasParsed = true
       return options.validate(retryParsed)
     } catch (error) {
@@ -322,6 +326,26 @@ export class AiJsonClient {
           if (repairError instanceof AiTransportError || repairError instanceof AiApiError) throw repairError
           throw new QualityReviewerError(
             `${operation} failed after retry and targeted repair. First attempt: ${errorMessage(firstError)}. Retry: ${errorMessage(error)}. Repair: ${errorMessage(repairError)}`,
+            { cause: repairError },
+          )
+        }
+      }
+      if (!retryWasParsed && retryText && options.repair) {
+        try {
+          return await this.requestRepair(
+            operation,
+            3,
+            { malformed_json: retryText },
+            error,
+            options.repair,
+            options.validate,
+            options.jsonSchema,
+            options.schemaName,
+          )
+        } catch (repairError) {
+          if (repairError instanceof AiTransportError || repairError instanceof AiApiError) throw repairError
+          throw new QualityReviewerError(
+            `${operation} returned malformed JSON after retry and targeted repair. First attempt: ${errorMessage(firstError)}. Retry: ${errorMessage(error)}. Repair: ${errorMessage(repairError)}`,
             { cause: repairError },
           )
         }

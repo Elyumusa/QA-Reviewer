@@ -20,6 +20,13 @@ function response(content: unknown): Response {
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 }
 
+function rawResponse(content: string | null): Response {
+  return new Response(JSON.stringify({
+    model: 'test-model',
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content } }],
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+}
+
 test('runs inventory, chunk, coverage, and synthesis as a bounded audit workflow', async () => {
   const context: ReviewContext = {
     test_file: {
@@ -129,6 +136,48 @@ test('runs inventory, chunk, coverage, and synthesis as a bounded audit workflow
   assert.equal(systems.length, 4)
   assert.ok(progress.some(message => message.includes('Inventory complete')))
   assert.ok(progress.some(message => message.includes('audit final synthesis')))
+})
+
+test('continues synthesis conservatively when malformed coverage output cannot be repaired', async () => {
+  const context: ReviewContext = {
+    test_file: { path: 'CoverageFallback.cy.ts', content: "describe('fallback', () => {\n  it('renders', () => cy.get('x-demo').should('exist'))\n})" },
+    diff: '', related_files: [],
+  }
+  let coverageAttempts = 0
+  const progress: string[] = []
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    onProgress: message => progress.push(message),
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      if (system.includes('global test-structure analyst')) return response({
+        summary: 'One suite.', suites: [{ name: 'fallback', start_line: 1, end_line: 3, purpose: 'Rendering', key_behaviors: ['renders'] }],
+        shared_infrastructure: [], cross_suite_patterns: [], context_used: ['CoverageFallback.cy.ts'], limitations: [],
+      })
+      if (system.includes('test-quality evidence analyst')) return response({
+        chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Observable assertion.', strengths: [], concerns: [], context_used: ['CoverageFallback.cy.ts'],
+      })
+      if (system.includes('repair a malformed or nearly valid')) return rawResponse('{still malformed')
+      if (system.includes('behavior-and-coverage analyst')) {
+        coverageAttempts += 1
+        return coverageAttempts === 1 ? rawResponse(null) : rawResponse('{"summary":"partial",}')
+      }
+      return response({
+        overall_assessment: 'The available test evidence is limited but valid.', summary: 'Completed without unsupported coverage claims.',
+        strengths: [], findings: [], standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [],
+        limitations: [], context_actually_used: ['CoverageFallback.cy.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', '# Standards', context, [])
+  assert.equal(result.audit.execution.complete, true)
+  assert.equal(result.incomplete_error, undefined)
+  assert.ok(result.audit.limitations.some(item => item.includes('source-and-coverage AI pass remained invalid')))
+  assert.ok(result.audit.execution.adaptive_recoveries.includes('source and coverage cross-check (conservative fallback)'))
+  assert.ok(progress.some(item => item.includes('Continuing final synthesis with a conservative empty coverage result')))
 })
 
 test('repairs a parseable global map without repeating the full test prompt', async () => {

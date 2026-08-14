@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.6
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.7
 ```
 
 Then run the installed command from the WebApp root:
@@ -37,7 +37,7 @@ npx qa-review --help
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
 
-To upgrade an earlier GitHub installation to the targeted-source and evidence-calibrated recommendation release, run the same command with `#v0.1.6`; this updates the commit pinned in `package-lock.json`.
+To upgrade an earlier GitHub installation to the targeted-source and resilient coverage release, run the same command with `#v0.1.7`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
@@ -225,7 +225,7 @@ Audit mode performs a bounded sequence of passes:
 
 The CLI prints progress while the work is running, including the current pass, retries, provider, model, duration, stream activity, and token usage. DeepSeek uses SSE streaming so long reasoning responses and keep-alives continuously move data over the connection. The client separates connection, stream-inactivity, and total safety timeouts instead of aborting every active stream after one fixed duration.
 
-Parseable schema-invalid global maps receive a small non-thinking repair containing only the invalid object, validation error, and schema. If the global AI map remains unavailable, a conservative deterministic suite/test map lets standards chunks continue and the report records the fallback as a limitation. If a semantic chunk still fails with a transport error, the reviewer splits only that region into smaller overlapping chunks and reviews those recovery chunks with thinking disabled and a smaller output allowance. Completed recovery work is checkpointed under the repository-root `.qa-review-cache/`. If a required pass ultimately fails, the report retains deterministic findings and completed chunk evidence, marks the audit incomplete, and exits `1` instead of returning an empty result. Use `--no-audit-cache` for a clean run.
+Parseable schema-invalid global maps receive a small non-thinking repair containing only the invalid object, validation error, and schema. Malformed coverage JSON after its normal retry receives the same bounded treatment: only the malformed output, parser error, and coverage schema are sent to repair. If coverage still cannot be validated, synthesis continues with a conservative empty coverage result and an explicit limitation; it never invents gaps from the failed pass. If the global AI map remains unavailable, a conservative deterministic suite/test map lets standards chunks continue and the report records the fallback as a limitation. If a semantic chunk still fails with a transport error, the reviewer splits only that region into smaller overlapping chunks and reviews those recovery chunks with thinking disabled and a smaller output allowance. Completed recovery work is checkpointed under the repository-root `.qa-review-cache/`. If a required pass ultimately fails, the report retains deterministic findings and completed chunk evidence, marks the audit incomplete, and exits `1` instead of returning an empty result. Use `--no-audit-cache` for a clean run.
 
 The final audit report is bounded to 30 synthesized findings so it remains usable. If a provider returns more, the reviewer validates every item and every source line first, merges exact rule/title repeats, and retains the strongest 30 using severity, confidence, evidence, and recurrence. The report records the original and retained counts in its limitations. A presentation-count overflow therefore does not turn an otherwise complete audit into an error.
 

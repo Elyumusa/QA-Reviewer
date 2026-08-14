@@ -110,6 +110,38 @@ test('runs the generic JSON client through the Anthropic Messages response shape
   })
 })
 
+test('repairs malformed JSON from a retry without resending the full review context', async () => {
+  const bodies: Array<Record<string, unknown>> = []
+  const client = new AiJsonClient({
+    provider: new AnthropicProviderAdapter({ apiKey: 'key', model: 'claude-sonnet-5', apiUrl: 'https://claude.test/v1/messages' }),
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      bodies.push(body)
+      const text = bodies.length === 1 ? null : bodies.length === 2 ? '{"value":"retry",}' : '{"value":"repaired"}'
+      return new Response(JSON.stringify({
+        model: 'claude-sonnet-5', stop_reason: 'end_turn',
+        content: text === null ? [{ type: 'thinking', thinking: 'reasoning only' }] : [{ type: 'text', text }],
+        usage: { input_tokens: 10, output_tokens: 4 },
+      }), { status: 200 })
+    },
+  })
+
+  const value = await client.requestJson({
+    operation: 'repairable operation', system: 'full system', input: 'very large full input', retryInput: 'very large retry input',
+    validate: candidate => (candidate as { value: string }).value,
+    repair: {
+      system: 'small repair system', maxTokens: 1000,
+      buildInput: (invalid, error) => `repair ${JSON.stringify(invalid)} because ${error}`,
+    },
+  })
+
+  assert.equal(value, 'repaired')
+  assert.equal(bodies.length, 3)
+  assert.equal(bodies[2]?.system, 'small repair system')
+  assert.doesNotMatch(JSON.stringify(bodies[2]), /very large full input/)
+  assert.match(JSON.stringify(bodies[2]), /malformed_json/)
+})
+
 test('recognizes each provider token-limit finish reason as truncation', async () => {
   const cases = [
     {
