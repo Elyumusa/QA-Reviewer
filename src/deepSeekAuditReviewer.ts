@@ -238,6 +238,7 @@ export class AiAuditReviewer {
     let globalMap: GlobalAuditMapResult | null = null
     let globalMapSource: 'ai' | 'checkpoint' | 'deterministic_fallback' | 'not_available' = 'not_available'
     let coverageResult: CoverageAuditResult | null = null
+    let coverageFallbackUsed = false
     checkpoint.adaptive_chunks ??= {}
     this.onProgress(
       `Inventory complete for ${context.test_file.path}: ${inventory.metrics.line_count} lines, ${inventory.metrics.test_count} tests, ${inventory.metrics.suite_count} suites, ${chunks.length} semantic audit chunks.`,
@@ -460,6 +461,7 @@ export class AiAuditReviewer {
             'No coverage gap was inferred from the failed pass; test-chunk evidence and targeted source excerpts remained available to final synthesis.',
           ],
         }
+        coverageFallbackUsed = true
         adaptiveRecoveries.push('source and coverage cross-check (conservative fallback)')
         this.onProgress(`Coverage output could not be repaired: ${errorMessage(error)}`)
         this.onProgress('Continuing final synthesis with a conservative empty coverage result; no unsupported coverage gaps will be invented.')
@@ -623,7 +625,7 @@ export class AiAuditReviewer {
         metric_locations: inventory.metric_locations,
         strengths: synthesis.strengths,
         standards_assessment: synthesis.standards_assessment,
-        coverage_gaps: synthesis.coverage_gaps,
+        coverage_gaps: coverageFallbackUsed ? [] : synthesis.coverage_gaps,
         test_placement_issues: synthesis.test_placement_issues,
         priorities: [...synthesis.priorities].sort((left, right) => left.rank - right.rank),
         limitations: reconcileContextLimitations([

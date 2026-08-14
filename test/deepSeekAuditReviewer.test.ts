@@ -166,7 +166,10 @@ test('continues synthesis conservatively when malformed coverage output cannot b
       }
       return response({
         overall_assessment: 'The available test evidence is limited but valid.', summary: 'Completed without unsupported coverage claims.',
-        strengths: [], findings: [], standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [],
+        strengths: [], findings: [], standards_assessment: [], coverage_gaps: [{
+          area: 'Unsupported model guess', description: 'This must be removed after coverage fallback.', source_evidence: [], test_evidence: [],
+          recommendation: 'Do not retain this.', severity: 'info', confidence: 'low',
+        }], test_placement_issues: [], priorities: [],
         limitations: [], context_actually_used: ['CoverageFallback.cy.ts'],
       })
     },
@@ -175,6 +178,7 @@ test('continues synthesis conservatively when malformed coverage output cannot b
   const result = await reviewer.audit('component', '# Standards', context, [])
   assert.equal(result.audit.execution.complete, true)
   assert.equal(result.incomplete_error, undefined)
+  assert.deepEqual(result.audit.coverage_gaps, [])
   assert.ok(result.audit.limitations.some(item => item.includes('source-and-coverage AI pass remained invalid')))
   assert.ok(result.audit.execution.adaptive_recoveries.includes('source and coverage cross-check (conservative fallback)'))
   assert.ok(progress.some(item => item.includes('Continuing final synthesis with a conservative empty coverage result')))

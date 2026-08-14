@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.7
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.8
 ```
 
 Then run the installed command from the WebApp root:
@@ -37,7 +37,7 @@ npx qa-review --help
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
 
-To upgrade an earlier GitHub installation to the targeted-source and resilient coverage release, run the same command with `#v0.1.7`; this updates the commit pinned in `package-lock.json`.
+To upgrade an earlier GitHub installation to the targeted-source and resilient coverage release, run the same command with `#v0.1.8`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
