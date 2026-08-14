@@ -46,16 +46,43 @@ test('validates an exact recommendation whose repository literals and references
   assert.equal(result.recommendations[0]?.official_reference_urls[0], officialUrl)
 })
 
-test('rejects official references that did not come from the supplied standards', () => {
+test('drops official references that did not come from the supplied standards', () => {
   const invalid = structuredClone(valid)
   invalid.recommendations[0]!.official_reference_urls = ['https://docs.cypress.io/untrusted-page']
-  assert.throws(() => validateRecommendationBatch(invalid, options), /not allowlisted/)
+  const result = validateRecommendationBatch(invalid, options)
+  assert.deepEqual(result.recommendations[0]?.official_reference_urls, [])
+})
+
+test('recovers empty recommendation prose from the validated synthesis finding', () => {
+  const incomplete = structuredClone(valid)
+  incomplete.recommendations[0]!.recommendation = ''
+  const result = validateRecommendationBatch(incomplete, options)
+  assert.equal(result.recommendations[0]?.recommendation, finding.suggestion)
 })
 
 test('rejects exact code that invents a repository-specific selector', () => {
   const invalid = structuredClone(valid)
   invalid.recommendations[0]!.replacement_code = "cy.get('.invented-selector').should('exist')"
   assert.throws(() => validateRecommendationBatch(invalid, options), /unverified literal/)
+})
+
+test('allows a new deterministic stub body when the replacement asserts the same value', () => {
+  const replacement = structuredClone(valid)
+  replacement.recommendations[0]!.replacement_code = [
+    "cy.intercept('POST', '/Api/Chatbot/chat*', { statusCode: 404, body: 'Conversation not found' }).as('notFound')",
+    "cy.get('@onError').should('have.been.calledWith', 'Chat request failed: Conversation not found')",
+  ].join('\n')
+  const result = validateRecommendationBatch(replacement, {
+    ...options,
+    repositoryText: `${options.repositoryText}\n/Api/Chatbot/chat*\n@onError`,
+  })
+  assert.equal(result.recommendations[0]?.code_kind, 'exact')
+})
+
+test('still rejects an endpoint that does not exist in repository context', () => {
+  const replacement = structuredClone(valid)
+  replacement.recommendations[0]!.replacement_code = "cy.intercept('POST', '/Api/Invented/route', {}).as('invented')"
+  assert.throws(() => validateRecommendationBatch(replacement, options), /unverified literal/)
 })
 
 test('requires unavailable recommendations to explain why code cannot be produced', () => {

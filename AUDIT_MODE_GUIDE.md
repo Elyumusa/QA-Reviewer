@@ -163,7 +163,7 @@ The prompt explicitly says deterministic findings are seeds, not the scope. This
 
 ### Pass 6: standards-grounded recommendation enrichment
 
-Synthesis decides which findings belong in the final bounded report. A separate non-thinking pass then improves those recommendations in batches of at most ten. Each batch receives only:
+Synthesis decides which findings belong in the final bounded report. A separate non-thinking pass then improves those recommendations in batches of at most five. Each batch receives only:
 
 - The selected findings; it cannot add, remove, combine, or reprioritize them.
 - Numbered source windows around each faulty line.
@@ -174,7 +174,7 @@ Synthesis decides which findings belong in the final bounded report. A separate 
 
 The model must classify replacement code as `exact`, `illustrative`, or `unavailable`. Exact code is accepted only when it is syntactically valid TypeScript and its repository-specific string literals are supported by collected code. Official URLs must match the standards-derived allowlist; the model cannot introduce a documentation URL. Illustrative and unavailable recommendations must state the adaptation or missing context.
 
-This pass is useful but not allowed to destroy a completed audit. If one recommendation batch fails after its bounded retry, findings in that batch retain their original validated synthesis recommendations and the failure is recorded in `audit.limitations`. Successful batches remain enriched.
+This pass is useful but not allowed to destroy a completed audit. Parseable schema defects first receive a targeted non-thinking repair containing only the invalid result, validation error, and schema. If the result is still invalid, the orchestrator recursively subdivides that batch until valid findings are retained or one individual finding is proven irreparable. Empty prose falls back to the synthesis recommendation, unsupported standard headings are resolved or removed, and non-allowlisted URLs are filtered locally. Only an irreparable individual finding retains its original recommendation and receives a finding-specific limitation; successful siblings remain enriched.
 
 ## 4. Runtime validation and failure behavior
 
@@ -312,10 +312,10 @@ Smaller chunks usually improve local attention but create more requests. Larger 
 Without retries, an audit uses approximately:
 
 ```text
-1 global map + number of semantic test chunks + 1 coverage pass + 1 synthesis pass + ceil(final findings / 10) recommendation passes
+1 global map + number of semantic test chunks + 1 coverage pass + 1 synthesis pass + ceil(final findings / 5) recommendation passes
 ```
 
-For a file producing six semantic chunks, a clean uncached audit uses nine logical requests before recommendation enrichment. No findings add no recommendation request; 1–10 findings add one, and the maximum 30-finding report adds three. A model-output retry or targeted repair adds one request for the affected pass. A transient connection failure can add up to the configured transport attempts; adaptive recovery replaces only the failed chunk with smaller evidence requests.
+For a file producing six semantic chunks, a clean uncached audit uses nine logical requests before recommendation enrichment. No findings add no recommendation request; 1–5 findings add one, and the maximum 30-finding report adds six. A model-output retry or targeted repair adds one request for the affected pass. A malformed recommendation batch may add smaller recovery requests only for that batch. A transient connection failure can add up to the configured transport attempts; adaptive recovery replaces only the failed region with smaller evidence requests.
 
 Global-map, semantic-chunk, and coverage results are stored in a content-addressed checkpoint under `.qa-review-cache/`. The key includes the test, standards, related context, model, provider, endpoint, chunk configuration, and explicit audit-pipeline revision. If synthesis fails, rerunning the same command reuses those passes and normally makes only the synthesis request. Source, standards, provider configuration, or pipeline-revision changes automatically produce a new key. A pipeline upgrade intentionally creates a one-time cache miss rather than reusing evidence produced by an incompatible prompt or schema. Use `--no-audit-cache` to bypass checkpoints.
 

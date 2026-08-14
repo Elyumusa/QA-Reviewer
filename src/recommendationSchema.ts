@@ -25,7 +25,7 @@ export const recommendationBatchJsonSchema = {
   properties: {
     recommendations: {
       type: 'array',
-      maxItems: 10,
+      maxItems: 5,
       items: {
         type: 'object',
         additionalProperties: false,
@@ -59,6 +59,29 @@ function text(value: unknown, label: string): string {
   return value.trim()
 }
 
+function normalizedReference(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function supportedStandardReferences(
+  returned: string[],
+  original: string[],
+  allowed: Set<string>,
+): string[] {
+  const allowedValues = [...allowed]
+  const resolve = (reference: string): string | undefined => {
+    if (allowed.has(reference)) return reference
+    const normalized = normalizedReference(reference)
+    return allowedValues.find(candidate => {
+      const normalizedCandidate = normalizedReference(candidate)
+      return normalized.length > 3 && (
+        normalizedCandidate.includes(normalized) || normalized.includes(normalizedCandidate)
+      )
+    })
+  }
+  return [...new Set([...returned, ...original].map(resolve).filter((value): value is string => value !== undefined))]
+}
+
 function strings(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
     throw new QualityReviewerError(`${label} must be a string array`)
@@ -88,6 +111,14 @@ function unverifiedExactLiterals(code: string, repositoryText: string): string[]
       const selectorTokens = value.match(/[A-Za-z_][\w-]{2,}/g) ?? []
       return selectorTokens.length > 0 && selectorTokens.every(token => repositoryText.includes(token))
     }
+    if (value.startsWith('@')) {
+      const alias = value.slice(1)
+      return repositoryText.includes(value) || code.includes(`.as('${alias}')`) || code.includes(`.as("${alias}")`)
+    }
+    if (code.includes(`.as('${value}')`) || code.includes(`.as("${value}")`)) return true
+    if (value.startsWith('/') || value.includes('/Api/') || value.includes('**/')) return false
+    const relatedLiteral = values.some(candidate => candidate !== value && (candidate.includes(value) || value.includes(candidate)))
+    if (relatedLiteral) return true
     return false
   }
   return [...new Set(values.filter(value => !supported(value)))]
@@ -119,6 +150,7 @@ export function validateRecommendationBatch(
     throw new QualityReviewerError(`recommendations must contain at most ${options.findings.length} items`)
   }
   const allowedKeys = new Set(options.findings.map(findingKey))
+  const findingsByKey = new Map(options.findings.map(finding => [findingKey(finding), finding]))
   const seen = new Set<string>()
   const recommendations = root.recommendations.map((value, index): RecommendationEnrichment => {
     const item = object(value, `recommendation ${index}`)
@@ -141,17 +173,14 @@ export function validateRecommendationBatch(
     if (typeof item.replacement_code === 'string') {
       validateTypeScriptSnippet(item.replacement_code, `recommendation ${index}.replacement_code`)
     }
-    const internalReferences = strings(item.internal_standard_references, `recommendation ${index}.internal_standard_references`)
-    if (internalReferences.length === 0) {
-      throw new QualityReviewerError(`recommendation ${index} must cite at least one supplied internal standard heading`)
-    }
-    if (!internalReferences.every(reference => options.allowedStandardHeadings.has(reference))) {
-      throw new QualityReviewerError(`recommendation ${index} cited an internal standard heading that was not supplied`)
-    }
+    const originalFinding = findingsByKey.get(key)!
+    const internalReferences = supportedStandardReferences(
+      strings(item.internal_standard_references, `recommendation ${index}.internal_standard_references`),
+      originalFinding.standards_references ?? [],
+      options.allowedStandardHeadings,
+    )
     const officialUrls = strings(item.official_reference_urls, `recommendation ${index}.official_reference_urls`)
-    if (!officialUrls.every(url => options.allowedOfficialUrls.has(url))) {
-      throw new QualityReviewerError(`recommendation ${index} cited an official URL that is not allowlisted by the standards`)
-    }
+      .filter(url => options.allowedOfficialUrls.has(url))
     const assumptions = strings(item.assumptions, `recommendation ${index}.assumptions`)
     if (item.code_kind !== 'exact' && assumptions.length === 0) {
       throw new QualityReviewerError(`recommendation ${index} marked ${item.code_kind} must describe the required assumptions or missing context`)
@@ -166,7 +195,9 @@ export function validateRecommendationBatch(
     }
     return {
       finding_key: key,
-      recommendation: text(item.recommendation, `recommendation ${index}.recommendation`),
+      recommendation: typeof item.recommendation === 'string' && item.recommendation.trim()
+        ? item.recommendation.trim()
+        : originalFinding.suggestion,
       replacement_code: item.replacement_code === null ? null : item.replacement_code.trim(),
       code_kind: item.code_kind,
       internal_standard_references: internalReferences,

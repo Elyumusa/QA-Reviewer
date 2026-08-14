@@ -26,7 +26,7 @@ Install it as a development dependency from the WebApp checkout:
 
 ```bash
 cd /path/to/WebApp
-npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.4
+npm install --save-dev git+https://github.com/Elyumusa/QA-Reviewer.git#v0.1.5
 ```
 
 Then run the installed command from the WebApp root:
@@ -37,7 +37,7 @@ npx qa-review --help
 
 The package builds its TypeScript CLI during installation. The compiled `qa-review` executable is exposed through the package `bin` entry.
 
-To upgrade an earlier GitHub installation to the standards-grounded recommendation release, run the same command with `#v0.1.4`; this updates the commit pinned in `package-lock.json`.
+To upgrade an earlier GitHub installation to the resilient standards-grounded recommendation release, run the same command with `#v0.1.5`; this updates the commit pinned in `package-lock.json`.
 
 ### Use a local checkout
 
@@ -228,7 +228,9 @@ Parseable schema-invalid global maps receive a small non-thinking repair contain
 
 The final audit report is bounded to 30 synthesized findings so it remains usable. If a provider returns more, the reviewer validates every item and every source line first, merges exact rule/title repeats, and retains the strongest 30 using severity, confidence, evidence, and recurrence. The report records the original and retained counts in its limitations. A presentation-count overflow therefore does not turn an otherwise complete audit into an error.
 
-After synthesis, audit mode improves recommendations in batches of at most ten findings. Internal standards remain the policy source; official Cypress pages linked by those standards are supporting authority. Each recommendation receives the exact faulty code window, matching test helpers, and matching related-source windows. Returned snippets are labelled `exact`, `illustrative`, or `unavailable`. Exact snippets are checked for valid TypeScript and for repository-specific selectors, aliases, endpoints, and expected strings before they are accepted. A provider failure in this optional enrichment stage preserves the completed audit's original validated recommendation and records a limitation instead of discarding the audit.
+After synthesis, audit mode improves recommendations in batches of at most five findings. Internal standards remain the policy source; official Cypress pages linked by those standards are supporting authority. Each recommendation receives the exact faulty code window, matching test helpers, and matching related-source windows. Returned snippets are labelled `exact`, `illustrative`, or `unavailable`. Exact snippets are checked for valid TypeScript and repository support for sensitive selectors and endpoints. A replacement may introduce deterministic stub/fixture data when it defines and asserts the same value.
+
+Parseable recommendation defects receive a small targeted repair rather than another full-context request. If a batch is still invalid, it is recursively divided until valid neighboring recommendations are retained and only a genuinely irreparable individual finding falls back to its synthesis recommendation. Empty recommendation prose reuses the validated synthesis text, unknown standard headings are resolved or dropped, and non-allowlisted URLs are removed locally. A provider failure in this optional stage therefore preserves the completed audit and records a finding-specific limitation instead of discarding an entire batch.
 
 An enriched Markdown finding resembles:
 
@@ -249,6 +251,8 @@ cy.get('@chatbot')
 ```
 
 The report then lists the applicable internal-standard heading and clickable allowlisted Cypress guidance. The reviewer never browses documentation during an audit.
+
+If a finding has only a prose recommendation, inspect `audit.limitations`. It will identify the exact finding whose enrichment could not be accepted. Other findings from the same original batch can still contain enriched code in `v0.1.5` and later.
 
 ## Troubleshooting
 

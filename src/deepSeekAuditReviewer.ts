@@ -9,11 +9,13 @@ import {
   buildGlobalAuditMapInput,
   buildGlobalAuditMapRepairInput,
   buildRecommendationEnrichmentInput,
+  buildRecommendationRepairInput,
   chunkAuditInstructions,
   coverageAuditInstructions,
   globalAuditMapInstructions,
   globalMapRepairInstructions,
   recommendationEnrichmentInstructions,
+  recommendationRepairInstructions,
   synthesisAuditInstructions,
   synthesisRepairInstructions,
 } from './auditPromptBuilder.js'
@@ -87,6 +89,8 @@ function batches<T>(items: T[], size: number): T[][] {
   for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size))
   return result
 }
+
+const recommendationBatchSize = 5
 
 function validateTestLines(result: AuditSynthesisResult, lineCount: number): AuditSynthesisResult {
   const valid = (line: number): boolean => line >= 1 && line <= lineCount
@@ -485,23 +489,23 @@ export class AiAuditReviewer {
 
     const guidance = parseStandardsGuidance(standards)
     const officialReferencesByUrl = new Map(guidance.officialReferences.map(reference => [reference.url, reference]))
+    const repositoryText = [context.test_file.content, ...context.related_files.map(file => file.content)].join('\n')
     const enrichedFindings = new Map<string, Finding>()
     const recommendationLimitations: string[] = []
-    let enrichedBatchCount = 0
-    const findingBatches = batches(synthesis.findings, 10)
+    let enrichedFindingCount = 0
+    const findingBatches = batches(synthesis.findings, recommendationBatchSize)
 
-    for (let batchIndex = 0; batchIndex < findingBatches.length; batchIndex += 1) {
-      const findingBatch = findingBatches[batchIndex]!
+    const enrichBatch = async (findingBatch: Finding[], label: string, depth = 0): Promise<void> => {
       const relevantSections = relevantStandardsSections(guidance, findingBatch)
       const relevantOfficialReferences = officialReferencesForSections(guidance, relevantSections)
       const allowedStandardHeadings = new Set(relevantSections.map(section => section.heading))
       const suppliedRepositoryEvidence = findingBatch.map(finding => buildFindingEvidence(finding, context)).join('\n')
       try {
         this.onProgress(
-          `Enriching recommendations ${batchIndex * 10 + 1}-${batchIndex * 10 + findingBatch.length} of ${synthesis.findings.length} with repository-specific code and standards references.`,
+          `Enriching recommendation batch ${label} (${findingBatch.length} finding(s)) with repository-specific code and standards references.`,
         )
         const result = await this.client.requestJson({
-          operation: `audit recommendation enrichment batch ${batchIndex + 1}/${findingBatches.length}`,
+          operation: `audit recommendation enrichment batch ${label}`,
           system: recommendationEnrichmentInstructions,
           input: buildRecommendationEnrichmentInput({ findings: findingBatch, context, guidance }),
           retryInput: buildRecommendationEnrichmentInput({ findings: findingBatch, context, guidance, isRetry: true }),
@@ -509,7 +513,7 @@ export class AiAuditReviewer {
             findings: findingBatch,
             allowedOfficialUrls: new Set(relevantOfficialReferences.map(reference => reference.url)),
             allowedStandardHeadings,
-            repositoryText: suppliedRepositoryEvidence,
+            repositoryText: `${suppliedRepositoryEvidence}\n${repositoryText}`,
           }),
           maxTokens: 12_000,
           maxRetryTokens: 20_000,
@@ -518,6 +522,11 @@ export class AiAuditReviewer {
           retryThinking: 'disabled',
           jsonSchema: recommendationBatchJsonSchema,
           schemaName: 'audit_recommendations',
+          repair: {
+            system: recommendationRepairInstructions,
+            buildInput: buildRecommendationRepairInput,
+            maxTokens: 16_000,
+          },
         })
         for (const recommendation of result.recommendations) {
           const original = findingBatch.find(finding => findingKey(finding) === recommendation.finding_key)!
@@ -533,12 +542,29 @@ export class AiAuditReviewer {
             recommendation_assumptions: recommendation.assumptions,
           })
         }
-        enrichedBatchCount += 1
+        enrichedFindingCount += result.recommendations.length
       } catch (error) {
-        const limitation = `Recommendation enrichment batch ${batchIndex + 1}/${findingBatches.length} failed; its original validated recommendations were preserved. ${errorMessage(error)}`
+        if (findingBatch.length > 1 && depth < 4) {
+          const midpoint = Math.ceil(findingBatch.length / 2)
+          const children = [findingBatch.slice(0, midpoint), findingBatch.slice(midpoint)].filter(child => child.length > 0)
+          adaptiveRecoveries.push(`recommendation batch ${label} subdivided`)
+          this.onProgress(
+            `Recommendation batch ${label} could not be accepted: ${errorMessage(error)}. Recovering its findings in ${children.length} smaller batch(es).`,
+          )
+          for (let index = 0; index < children.length; index += 1) {
+            await enrichBatch(children[index]!, `${label}.${index + 1}`, depth + 1)
+          }
+          return
+        }
+        const finding = findingBatch[0]
+        const limitation = `Recommendation enrichment could not safely enrich ${finding?.rule ?? label} at line ${finding?.line ?? 'unknown'}; its original validated recommendation was preserved. ${errorMessage(error)}`
         recommendationLimitations.push(limitation)
         this.onProgress(limitation)
       }
+    }
+
+    for (let batchIndex = 0; batchIndex < findingBatches.length; batchIndex += 1) {
+      await enrichBatch(findingBatches[batchIndex]!, `${batchIndex + 1}/${findingBatches.length}`)
     }
 
     const finalFindings = synthesis.findings.map(finding => enrichedFindings.get(findingKey(finding)) ?? finding)
@@ -587,7 +613,7 @@ export class AiAuditReviewer {
             'standards review by test chunk',
             'source and coverage cross-check',
             'evidence synthesis and prioritization',
-            ...(enrichedBatchCount > 0 ? ['standards-grounded recommendation enrichment'] : []),
+            ...(enrichedFindingCount > 0 ? ['standards-grounded recommendation enrichment'] : []),
           ],
         },
       },

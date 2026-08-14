@@ -564,7 +564,82 @@ test('preserves a completed audit when optional recommendation enrichment fails'
   assert.equal(result.audit.execution.complete, true)
   assert.equal(result.incomplete_error, undefined)
   assert.equal(result.findings[0]?.suggestion, 'Assert meaningful rendered content.')
-  assert.ok(result.audit.limitations.some(limitation => limitation.includes('Recommendation enrichment batch 1/1 failed')))
-  assert.ok(progress.some(message => message.includes('original validated recommendations were preserved')))
+  assert.ok(result.audit.limitations.some(limitation => limitation.includes('Recommendation enrichment could not safely enrich ASSERT-001 at line 2')))
+  assert.ok(progress.some(message => message.includes('original validated recommendation was preserved')))
   assert.ok(!result.audit.execution.passes.includes('standards-grounded recommendation enrichment'))
+})
+
+test('subdivides a schema-invalid recommendation batch and preserves valid per-finding snippets', async () => {
+  const content = [
+    "describe('examples', () => {",
+    "  it('checks one', () => cy.get('.one').should('exist'))",
+    "  it('checks two', () => cy.get('.two').should('exist'))",
+    '})',
+  ].join('\n')
+  const context: ReviewContext = {
+    test_file: { path: 'Examples.cy.ts', content }, diff: '',
+    related_files: [{ path: 'Examples.ts', reason: 'Rendered source', content: "html`<div class='one'>One</div><div class='two'>Two</div>`", truncated: false }],
+  }
+  const heading = '3. Write Assertions That Can Detect a Regression'
+  const officialUrl = 'https://docs.cypress.io/app/core-concepts/retry-ability'
+  const reviewer = new DeepSeekAuditReviewer({
+    apiKey: 'test-key', model: 'test-model', chunkLines: 100, chunkConcurrency: 1,
+    fetchImplementation: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      const system = body.messages[0]?.content ?? ''
+      const user = body.messages[1]?.content ?? ''
+      if (system.includes('global test-structure analyst')) return response({
+        summary: 'Two examples.', suites: [{ name: 'examples', start_line: 1, end_line: 4, purpose: 'Rendering', key_behaviors: ['checks one', 'checks two'] }],
+        shared_infrastructure: [], cross_suite_patterns: [], context_used: ['Examples.cy.ts'], limitations: [],
+      })
+      if (system.includes('test-quality evidence analyst')) return response({
+        chunk_id: user.match(/Chunk: ([^ ]+)/)?.[1] ?? 'unknown', summary: 'Two shallow assertions.', strengths: [], concerns: [], context_used: ['Examples.cy.ts'],
+      })
+      if (system.includes('behavior-and-coverage analyst')) return response({
+        summary: 'Rendered text is available.', covered_behaviors: [], coverage_gaps: [], test_placement_issues: [], context_used: ['Examples.ts'], limitations: [],
+      })
+      if (system.includes('repair a nearly valid batch')) return response({ recommendations: [] })
+      if (system.includes('recommendation engineer')) {
+        const hasOne = user.includes('ASSERT-ONE:2')
+        const hasTwo = user.includes('ASSERT-TWO:3')
+        if (hasOne && hasTwo) return response({ recommendations: [{
+          finding_key: 'ASSERT-ONE:2', recommendation: 'Assert the first rendered value.',
+          replacement_code: "cy.get('.one').should('contain.text', 'One')", code_kind: 'exact',
+          internal_standard_references: [heading], official_reference_urls: [officialUrl], assumptions: [],
+        }, {
+          finding_key: 'ASSERT-TWO:3', recommendation: 'Assert the second rendered value.',
+          replacement_code: "cy.get('.two'", code_kind: 'exact',
+          internal_standard_references: [heading], official_reference_urls: [officialUrl], assumptions: [],
+        }] })
+        const key = hasOne ? 'ASSERT-ONE:2' : 'ASSERT-TWO:3'
+        const selector = hasOne ? '.one' : '.two'
+        const expected = hasOne ? 'One' : 'Two'
+        return response({ recommendations: [{
+          finding_key: key, recommendation: `Assert the ${expected.toLowerCase()} rendered value.`,
+          replacement_code: `cy.get('${selector}').should('contain.text', '${expected}')`, code_kind: 'exact',
+          internal_standard_references: [heading], official_reference_urls: [officialUrl], assumptions: [],
+        }] })
+      }
+      const makeFinding = (line: number, rule: string, name: string) => ({
+        line, end_line: line, severity: 'medium', rule, category: 'quality', title: `Shallow ${name} assertion`,
+        message: `The ${name} test checks only existence.`, impact: 'Incorrect content can pass.', suggestion: 'Assert rendered content.',
+        replacement_code: null, specific_cypress_methods: ['cy.get', 'should'], context_used: ['Examples.cy.ts', 'Examples.ts'], confidence: 'high',
+        evidence: [`Line ${line} checks only existence.`], standards_references: [heading], related_locations: [],
+      })
+      return response({
+        overall_assessment: 'Both tests need stronger assertions.', summary: 'Assert rendered values.', strengths: [],
+        findings: [makeFinding(2, 'ASSERT-ONE', 'first'), makeFinding(3, 'ASSERT-TWO', 'second')],
+        standards_assessment: [], coverage_gaps: [], test_placement_issues: [], priorities: [], limitations: [], context_actually_used: ['Examples.cy.ts', 'Examples.ts'],
+      })
+    },
+  })
+
+  const result = await reviewer.audit('component', `## ${heading}\n\nAssert rendered values with retryable queries. [Retry-ability](${officialUrl})`, context, [])
+  assert.equal(result.audit.execution.complete, true)
+  assert.equal(result.findings.length, 2)
+  assert.ok(result.findings.every(finding => finding.recommendation_code_kind === 'exact'))
+  assert.match(result.findings[0]?.replacement_code ?? '', /contain\.text.*One/)
+  assert.match(result.findings[1]?.replacement_code ?? '', /contain\.text.*Two/)
+  assert.ok(result.audit.execution.adaptive_recoveries.some(item => item.includes('recommendation batch 1/1 subdivided')))
+  assert.ok(result.audit.execution.passes.includes('standards-grounded recommendation enrichment'))
 })

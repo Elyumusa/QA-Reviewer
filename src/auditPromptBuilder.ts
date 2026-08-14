@@ -93,8 +93,13 @@ Rules:
 - Internal standards are the primary policy. Cite only exact supplied section headings.
 - Official Cypress documentation is supporting authority. Cite only URLs in the supplied allowlist and only when the page directly supports this recommendation. Do not claim Cypress recommends a project-specific design.
 - Prefer retryable rendered assertions, request aliases, observable event details, and public behavior where those match the evidence.
+- A deterministic stub or fixture value may be introduced when the replacement defines it and asserts the same value. Repository-sensitive selectors, endpoints, events, and component behavior must still come from supplied evidence.
 - Return exactly one recommendation for every requested finding_key, in the same order.
 - Return JSON matching the supplied schema and nothing else.`
+
+export const recommendationRepairInstructions = `You repair a nearly valid batch of Levelbuild Cypress recommendation JSON.
+
+Preserve every finding_key and every supported recommendation. Correct only the supplied validation error. Keep repository-specific code grounded in the object you received; do not introduce new selectors, aliases, endpoints, fixtures, events, methods, expected values, or component behavior. Cite only standard headings and official URLs already present in the invalid object. Return the complete repaired JSON object and nothing else.`
 
 export const globalMapRepairInstructions = `You repair a nearly valid Levelbuild Cypress global-map JSON object.
 
@@ -283,6 +288,14 @@ export function buildRecommendationEnrichmentInput(options: {
     section('required_json_schema', JSON.stringify(recommendationBatchJsonSchema, null, 2)),
   ].join('\n\n')
   return options.isRetry ? retry(input) : input
+}
+
+export function buildRecommendationRepairInput(invalidValue: unknown, validationError: string): string {
+  return [
+    `Validation error: ${validationError}`,
+    section('invalid_recommendation_json', JSON.stringify(invalidValue, null, 2)),
+    section('required_json_schema', JSON.stringify(recommendationBatchJsonSchema, null, 2)),
+  ].join('\n\n')
 }
 
 export function buildEvidenceExcerpts(
